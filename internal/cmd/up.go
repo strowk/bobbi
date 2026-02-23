@@ -10,13 +10,13 @@ import (
 	"strings"
 	"syscall"
 
-	"bob/internal/orchestrator"
-	"bob/internal/queue"
+	"bobbcode/internal/orchestrator"
+	"bobbcode/internal/queue"
 )
 
 func Up(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	promptFlag := fs.String("p", "", "prompt to pass to architect (e.g. bob up -p 'change the API to use REST')")
+	promptFlag := fs.String("p", "", "prompt to pass to architect (e.g. bobbcode up -p 'change the API to use REST')")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -26,16 +26,16 @@ func Up(args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	// Verify .bob directory exists
-	if _, err := os.Stat(cwd + "/.bob"); os.IsNotExist(err) {
-		return fmt.Errorf("not a bob project directory (run 'bob init' first)")
+	// Verify .bobb directory exists
+	if _, err := os.Stat(cwd + "/.bobb"); os.IsNotExist(err) {
+		return fmt.Errorf("not a bobb project directory (run 'bobbcode init' first)")
 	}
 
 	userPrompt := *promptFlag
 
 	// If no -p flag and queue is empty, ask the user interactively
 	if userPrompt == "" {
-		queuesDir := cwd + "/.bob/queues"
+		queuesDir := cwd + "/.bobb/queues"
 		requests, _, err := queue.ReadRequests(queuesDir)
 		if err == nil && len(requests) == 0 {
 			userPrompt, err = askUserForPrompt()
@@ -53,17 +53,17 @@ func Up(args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		fmt.Printf("\n[bob] Received signal %v, shutting down...\n", sig)
+		fmt.Printf("\n[bobbcode] Received signal %v, shutting down...\n", sig)
 		cancel()
 	}()
 
 	orch := orchestrator.New(cwd, userPrompt)
-	fmt.Println("[bob] Starting orchestrator...")
+	fmt.Println("[bobbcode] Starting orchestrator...")
 	return orch.Run(ctx)
 }
 
 func askUserForPrompt() (string, error) {
-	fmt.Println("[bob] No pending requests in the queue.")
+	fmt.Println("[bobbcode] No pending requests in the queue.")
 	fmt.Println()
 	fmt.Println("  1) Start architect with initial specification (default)")
 	fmt.Println("  2) Provide instructions for the architect")

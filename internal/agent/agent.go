@@ -38,21 +38,23 @@ func RepoDir(agentType AgentType) string {
 // StartAgent launches a claude process for the given agent type in the given working directory.
 // The prompt describes the task to perform. It blocks until the agent finishes.
 func StartAgent(agentType AgentType, workDir string, prompt string) error {
-	bobBin, err := os.Executable()
+	bobbBin, err := os.Executable()
 	if err != nil {
-		bobBin = "bob"
+		bobbBin = "bobbcode"
 	}
+	// Normalize to forward slashes for valid JSON on Windows
+	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 
-	// Ensure .mcp.json points to the right bob binary
+	// Ensure .mcp.json points to the right bobb binary
 	mcpJSON := fmt.Sprintf(`{
   "mcpServers": {
-    "bob": {
+    "bobbcode": {
       "type": "stdio",
       "command": %q,
       "args": ["mcp", "--agent", %q]
     }
   }
-}`, bobBin, string(agentType))
+}`, bobbBin, string(agentType))
 	mcpPath := filepath.Join(workDir, ".mcp.json")
 	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0644); err != nil {
 		return fmt.Errorf("write .mcp.json: %w", err)
@@ -93,11 +95,11 @@ func StartAgent(agentType AgentType, workDir string, prompt string) error {
 		}
 	}
 
-	fmt.Printf("[bob] Starting %s agent in %s\n", agentType, workDir)
+	fmt.Printf("[bobbcode] Starting %s agent in %s\n", agentType, workDir)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
-	fmt.Printf("[bob] Agent %s finished\n", agentType)
+	fmt.Printf("[bobbcode] Agent %s finished\n", agentType)
 	return nil
 }
 

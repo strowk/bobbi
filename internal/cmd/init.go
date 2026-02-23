@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"bob/internal/agent"
+	"bobbcode/internal/agent"
 )
 
 func Init() error {
@@ -15,21 +15,21 @@ func Init() error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	// Create .bob directories
-	for _, dir := range []string{".bob", ".bob/queues", ".bob/completed"} {
+	// Create .bobb directories
+	for _, dir := range []string{".bobb", ".bobb/queues", ".bobb/completed"} {
 		if err := os.MkdirAll(filepath.Join(cwd, dir), 0755); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
 
-	bobBin, err := os.Executable()
+	bobbBin, err := os.Executable()
 	if err != nil {
-		bobBin = "bob"
+		bobbBin = "bobbcode"
 	}
 
 	for _, agentType := range agent.AllTypes() {
 		repoDir := filepath.Join(cwd, agent.RepoDir(agentType))
-		if err := initAgentRepo(repoDir, agentType, bobBin); err != nil {
+		if err := initAgentRepo(repoDir, agentType, bobbBin); err != nil {
 			return fmt.Errorf("init %s repo: %w", agentType, err)
 		}
 	}
@@ -39,7 +39,7 @@ func Init() error {
 		return fmt.Errorf("create output/: %w", err)
 	}
 
-	fmt.Println("[bob] Initialized successfully")
+	fmt.Println("[bobbcode] Initialized successfully")
 	return nil
 }
 
@@ -102,7 +102,7 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) err
 		return err
 	}
 
-	fmt.Printf("[bob] Initialized %s repository at %s\n", agentType, repoDir)
+	fmt.Printf("[bobbcode] Initialized %s repository at %s\n", agentType, repoDir)
 	return nil
 }
 

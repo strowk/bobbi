@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"bob/internal/agent"
-	"bob/internal/queue"
+	"bobbcode/internal/agent"
+	"bobbcode/internal/queue"
 )
 
 type Orchestrator struct {
@@ -41,8 +41,8 @@ type workItem struct {
 func New(baseDir string, userPrompt string) *Orchestrator {
 	return &Orchestrator{
 		baseDir:      baseDir,
-		queuesDir:    filepath.Join(baseDir, ".bob", "queues"),
-		completedDir: filepath.Join(baseDir, ".bob", "completed"),
+		queuesDir:    filepath.Join(baseDir, ".bobb", "queues"),
+		completedDir: filepath.Join(baseDir, ".bobb", "completed"),
 		userPrompt:   userPrompt,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
@@ -67,13 +67,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// Bootstrap: if queue is empty, enqueue start_architect
 	requests, _, err := queue.ReadRequests(o.queuesDir)
 	if err == nil && len(requests) == 0 {
-		fmt.Println("[bob] No pending requests, bootstrapping with start_architect")
+		fmt.Println("[bobbcode] No pending requests, bootstrapping with start_architect")
 		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", "orchestrator", o.userPrompt); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
 
-	fmt.Printf("[bob] Time limit: %s\n", o.timeout)
+	fmt.Printf("[bobbcode] Time limit: %s\n", o.timeout)
 
 	// Poll loop
 	ticker := time.NewTicker(2 * time.Second)
@@ -85,14 +85,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-o.done:
-			fmt.Println("[bob] Solution confirmed, shutting down...")
+			fmt.Println("[bobbcode] Solution confirmed, shutting down...")
 			o.shutdown()
+			o.drainQueues()
 			return nil
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
-				fmt.Printf("[bob] Time limit of %s reached, shutting down...\n", o.timeout)
+				fmt.Printf("[bobbcode] Time limit of %s reached, shutting down...\n", o.timeout)
 			} else {
-				fmt.Println("[bob] Shutting down orchestrator...")
+				fmt.Println("[bobbcode] Shutting down orchestrator...")
 			}
 			o.shutdown()
 			return nil
@@ -107,7 +108,6 @@ func (o *Orchestrator) shutdown() {
 		close(ch)
 	}
 	o.wg.Wait()
-	o.drainQueues()
 }
 
 // drainQueues moves any remaining queue files to completed on shutdown.
@@ -118,18 +118,18 @@ func (o *Orchestrator) drainQueues() {
 	}
 	for _, p := range paths {
 		if err := queue.MarkCompleted(p, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bob] Error draining queue file %s: %v\n", p, err)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Error draining queue file %s: %v\n", p, err)
 		}
 	}
 	if len(paths) > 0 {
-		fmt.Printf("[bob] Drained %d remaining queue file(s) to completed\n", len(paths))
+		fmt.Printf("[bobbcode] Drained %d remaining queue file(s) to completed\n", len(paths))
 	}
 }
 
 func (o *Orchestrator) poll() {
 	requests, paths, err := queue.ReadRequests(o.queuesDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error reading queues: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error reading queues: %v\n", err)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (o *Orchestrator) poll() {
 		item := workItem{request: req, requestPath: paths[i]}
 		targetAgent := o.routeRequest(req.Request.Type)
 		if targetAgent == "" {
-			fmt.Fprintf(os.Stderr, "[bob] Unknown request type: %s\n", req.Request.Type)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Unknown request type: %s\n", req.Request.Type)
 			continue
 		}
 
@@ -180,13 +180,13 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 		default:
 		}
 
-		fmt.Printf("[bob] Processing %s request (from: %s) for %s agent\n",
+		fmt.Printf("[bobbcode] Processing %s request (from: %s) for %s agent\n",
 			item.request.Request.Type, item.request.Request.From, agentType)
 		o.processRequest(ctx, agentType, item)
 
 		// Mark completed
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bob] Error marking completed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Error marking completed: %v\n", err)
 		}
 	}
 }
@@ -208,7 +208,7 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	// Check context before starting a potentially long agent run
 	select {
 	case <-ctx.Done():
-		fmt.Printf("[bob] Skipping %s agent (shutting down)\n", agentType)
+		fmt.Printf("[bobbcode] Skipping %s agent (shutting down)\n", agentType)
 		return
 	default:
 	}
@@ -221,7 +221,7 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 
 	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
 	if err := agent.StartAgent(agentType, repoDir, prompt); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Agent %s error: %v\n", agentType, err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Agent %s error: %v\n", agentType, err)
 	}
 
 	// Post-agent: copy outputs to dependent repos
@@ -237,7 +237,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
 		if err := CopyDir(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bob] Error copying architecture to solver: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to solver: %v\n", err)
 		}
 
 	case agent.Evaluator:
@@ -245,7 +245,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
 		if err := CopyDir(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bob] Error copying architecture to evaluator: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
 		}
 	}
 }
@@ -260,13 +260,13 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 			os.RemoveAll(dst)
 			os.MkdirAll(dst, 0755)
 			if err := CopyDir(archDir, dst); err != nil {
-				fmt.Fprintf(os.Stderr, "[bob] Error copying architecture to %s: %v\n", target, err)
+				fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to %s: %v\n", target, err)
 			}
 		}
 
 		// After architect, start solver
 		if _, err := queue.WriteRequest(o.queuesDir, "start_solver", "orchestrator", ""); err != nil {
-			fmt.Fprintf(os.Stderr, "[bob] Error queuing start_solver: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_solver: %v\n", err)
 		}
 	}
 }
@@ -280,7 +280,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstDeliverable)
 	os.MkdirAll(dstDeliverable, 0755)
 	if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error copying deliverable to evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying deliverable to evaluator: %v\n", err)
 	}
 
 	// Copy solution source to reviewer
@@ -288,7 +288,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)
 	if err := CopyDir(solverDir, dstSolution); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error copying solution to reviewer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying solution to reviewer: %v\n", err)
 	}
 
 	// Copy architecture to evaluator
@@ -297,15 +297,15 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstArch)
 	os.MkdirAll(dstArch, 0755)
 	if err := CopyDir(archDir, dstArch); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error copying architecture to evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
 	}
 
 	// Start evaluator and reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error queuing start_evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_evaluator: %v\n", err)
 	}
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error queuing start_reviewer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_reviewer: %v\n", err)
 	}
 }
 
@@ -316,13 +316,13 @@ func (o *Orchestrator) handleConfirmSolution() {
 	os.RemoveAll(dstOutput)
 	os.MkdirAll(dstOutput, 0755)
 	if err := CopyDir(srcDeliverable, dstOutput); err != nil {
-		fmt.Fprintf(os.Stderr, "[bob] Error copying deliverable to output: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying deliverable to output: %v\n", err)
 	}
 
-	fmt.Println("[bob] ========================================")
-	fmt.Println("[bob] Solution confirmed and delivered!")
-	fmt.Println("[bob] Output available in: output/")
-	fmt.Println("[bob] ========================================")
+	fmt.Println("[bobbcode] ========================================")
+	fmt.Println("[bobbcode] Solution confirmed and delivered!")
+	fmt.Println("[bobbcode] Output available in: output/")
+	fmt.Println("[bobbcode] ========================================")
 
 	// Signal orchestrator to shut down
 	close(o.done)

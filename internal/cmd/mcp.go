@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	mcpserver "bob/internal/mcp"
+	mcpserver "bobbcode/internal/mcp"
 )
 
 func MCP(args []string) error {
@@ -17,7 +17,7 @@ func MCP(args []string) error {
 	}
 
 	if agentType == "" {
-		return fmt.Errorf("usage: bob mcp --agent <solver|evaluator|architect|reviewer>")
+		return fmt.Errorf("usage: bobbcode mcp --agent <solver|evaluator|architect|reviewer>")
 	}
 
 	switch agentType {

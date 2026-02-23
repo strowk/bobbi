@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 func ClaudeMD(agentType AgentType) string {
 	switch agentType {
@@ -101,6 +104,8 @@ You are a code reviewer. Your job is to review solution code for quality.
 }
 
 func SettingsJSON(workDir string) string {
+	// Normalize to forward slashes so paths are valid on Windows
+	workDir = strings.ReplaceAll(workDir, `\`, "/")
 	return fmt.Sprintf(`{
   "permissions": {
     "allow": [
@@ -112,23 +117,25 @@ func SettingsJSON(workDir string) string {
       "Bash(*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "mcp__bob__*"
+      "mcp__bobbcode__*"
     ],
     "deny": []
   }
 }`, workDir, workDir, workDir, workDir, workDir)
 }
 
-func McpJSON(agentType AgentType, bobBin string) string {
+func McpJSON(agentType AgentType, bobbBin string) string {
+	// Normalize to forward slashes so the command path is valid JSON on Windows
+	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 	return fmt.Sprintf(`{
   "mcpServers": {
-    "bob": {
+    "bobbcode": {
       "type": "stdio",
       "command": %q,
       "args": ["mcp", "--agent", %q]
     }
   }
-}`, bobBin, string(agentType))
+}`, bobbBin, string(agentType))
 }
 
 func GitIgnore(agentType AgentType) string {

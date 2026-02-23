@@ -1,4 +1,4 @@
-module bob
+module bobbcode
 
 go 1.25.4
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,8 +80,6 @@ func StartAgent(agentType AgentType, workDir string, prompt string) error {
 		"--verbose",
 	)
 	cmd.Dir = workDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
 	// Strip env vars so child claude uses subscription auth (not API key)
 	// and doesn't think it's inside an existing session
@@ -95,8 +94,38 @@ func StartAgent(agentType AgentType, workDir string, prompt string) error {
 		}
 	}
 
+	// Pipe output through Go rather than inheriting handles directly,
+	// which can silently lose output on Windows/MINGW
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
 	fmt.Printf("[bobbcode] Starting %s agent in %s\n", agentType, workDir)
-	if err := cmd.Run(); err != nil {
+	fmt.Printf("[bobbcode] Command: %s\n", strings.Join(cmd.Args, " "))
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("agent %s start: %w", agentType, err)
+	}
+
+	// Copy child output to terminal in background
+	done := make(chan struct{})
+	go func() {
+		io.Copy(os.Stdout, stdoutPipe)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(os.Stderr, stderrPipe)
+		done <- struct{}{}
+	}()
+
+	err = cmd.Wait()
+	<-done
+	<-done
+	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
 	fmt.Printf("[bobbcode] Agent %s finished\n", agentType)

@@ -6,9 +6,14 @@ import (
 )
 
 func ClaudeMD(agentType AgentType) string {
+	preamble := `IMPORTANT: Your working directory is the root of this repository.
+ALL file operations MUST use relative paths (e.g. "./architecture/", "./src/").
+NEVER access files outside this directory. Do NOT use absolute paths.
+
+`
 	switch agentType {
 	case Solver:
-		return `# Solver Agent
+		return preamble + `# Solver Agent
 
 You are a software developer. Your job is to implement a solution based on the technical contract.
 
@@ -32,7 +37,7 @@ You are a software developer. Your job is to implement a solution based on the t
 `
 
 	case Evaluator:
-		return `# Evaluator Agent
+		return preamble + `# Evaluator Agent
 
 You are a test engineer. Your job is to verify that a solution meets the technical contract.
 
@@ -57,7 +62,7 @@ You are a test engineer. Your job is to verify that a solution meets the technic
 `
 
 	case Architect:
-		return `# Architect Agent
+		return preamble + `# Architect Agent
 
 You are a software architect. Your job is to create and maintain a technical contract based on the specification.
 
@@ -81,7 +86,7 @@ You are a software architect. Your job is to create and maintain a technical con
 `
 
 	case Reviewer:
-		return `# Reviewer Agent
+		return preamble + `# Reviewer Agent
 
 You are a code reviewer. Your job is to review solution code for quality.
 

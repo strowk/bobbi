@@ -184,7 +184,13 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 			item.request.Request.Type, item.request.Request.From, agentType)
 		o.processRequest(ctx, agentType, item)
 
-		// Mark completed
+		// Only mark completed if the context wasn't cancelled (i.e. not interrupted)
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[bobbcode] Agent %s was interrupted, leaving request in queue\n", agentType)
+			return
+		default:
+		}
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
 			fmt.Fprintf(os.Stderr, "[bobbcode] Error marking completed: %v\n", err)
 		}
@@ -220,7 +226,7 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	o.preCopy(agentType)
 
 	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
-	if err := agent.StartAgent(agentType, repoDir, prompt); err != nil {
+	if err := agent.StartAgent(ctx, agentType, repoDir, prompt); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbcode] Agent %s error: %v\n", agentType, err)
 	}
 

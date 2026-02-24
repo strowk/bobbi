@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -38,7 +39,8 @@ func RepoDir(agentType AgentType) string {
 
 // StartAgent launches a claude process for the given agent type in the given working directory.
 // The prompt describes the task to perform. It blocks until the agent finishes.
-func StartAgent(agentType AgentType, workDir string, prompt string) error {
+// If the context is cancelled, the child process is killed.
+func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt string) error {
 	bobbBin, err := os.Executable()
 	if err != nil {
 		bobbBin = "bobbcode"
@@ -73,13 +75,16 @@ func StartAgent(agentType AgentType, workDir string, prompt string) error {
 		return fmt.Errorf("write settings.json: %w", err)
 	}
 
-	cmd := exec.Command("claude",
-		"-p", prompt,
+	// Pass prompt via stdin instead of -p argument, because on Windows
+	// the claude .cmd batch shim truncates arguments at newlines
+	cmd := exec.CommandContext(ctx, "claude",
+		"-p", "-",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
 	)
 	cmd.Dir = workDir
+	cmd.Stdin = strings.NewReader(prompt)
 
 	// Strip env vars so child claude uses subscription auth (not API key)
 	// and doesn't think it's inside an existing session

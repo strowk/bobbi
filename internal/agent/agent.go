@@ -43,15 +43,15 @@ func RepoDir(agentType AgentType) string {
 func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt string) error {
 	bobbBin, err := os.Executable()
 	if err != nil {
-		bobbBin = "bobbcode"
+		bobbBin = "bobbi"
 	}
 	// Normalize to forward slashes for valid JSON on Windows
 	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 
-	// Ensure .mcp.json points to the right bobb binary
+	// Ensure .mcp.json points to the right bobbi binary
 	mcpJSON := fmt.Sprintf(`{
   "mcpServers": {
-    "bobbcode": {
+    "bobbi": {
       "type": "stdio",
       "command": %q,
       "args": ["mcp", "--agent", %q]
@@ -110,8 +110,8 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	fmt.Printf("[bobbcode] Starting %s agent in %s\n", agentType, workDir)
-	fmt.Printf("[bobbcode] Command: %s\n", strings.Join(cmd.Args, " "))
+	fmt.Printf("[bobbi] Starting %s agent in %s\n", agentType, workDir)
+	fmt.Printf("[bobbi] Command: %s\n", strings.Join(cmd.Args, " "))
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("agent %s start: %w", agentType, err)
 	}
@@ -133,7 +133,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
-	fmt.Printf("[bobbcode] Agent %s finished\n", agentType)
+	fmt.Printf("[bobbi] Agent %s finished\n", agentType)
 	return nil
 }
 

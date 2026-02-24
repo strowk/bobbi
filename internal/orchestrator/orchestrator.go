@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"bobbcode/internal/agent"
-	"bobbcode/internal/queue"
+	"bobbi/internal/agent"
+	"bobbi/internal/queue"
 )
 
 type Orchestrator struct {
@@ -41,8 +41,8 @@ type workItem struct {
 func New(baseDir string, userPrompt string) *Orchestrator {
 	return &Orchestrator{
 		baseDir:      baseDir,
-		queuesDir:    filepath.Join(baseDir, ".bobb", "queues"),
-		completedDir: filepath.Join(baseDir, ".bobb", "completed"),
+		queuesDir:    filepath.Join(baseDir, ".bobbi", "queues"),
+		completedDir: filepath.Join(baseDir, ".bobbi", "completed"),
 		userPrompt:   userPrompt,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
@@ -67,13 +67,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// Bootstrap: if queue is empty, enqueue start_architect
 	requests, _, err := queue.ReadRequests(o.queuesDir)
 	if err == nil && len(requests) == 0 {
-		fmt.Println("[bobbcode] No pending requests, bootstrapping with start_architect")
+		fmt.Println("[bobbi] No pending requests, bootstrapping with start_architect")
 		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", "orchestrator", o.userPrompt); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
 
-	fmt.Printf("[bobbcode] Time limit: %s\n", o.timeout)
+	fmt.Printf("[bobbi] Time limit: %s\n", o.timeout)
 
 	// Poll loop
 	ticker := time.NewTicker(2 * time.Second)
@@ -85,15 +85,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-o.done:
-			fmt.Println("[bobbcode] Solution confirmed, shutting down...")
+			fmt.Println("[bobbi] Solution confirmed, shutting down...")
 			o.shutdown()
 			o.drainQueues()
 			return nil
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
-				fmt.Printf("[bobbcode] Time limit of %s reached, shutting down...\n", o.timeout)
+				fmt.Printf("[bobbi] Time limit of %s reached, shutting down...\n", o.timeout)
 			} else {
-				fmt.Println("[bobbcode] Shutting down orchestrator...")
+				fmt.Println("[bobbi] Shutting down orchestrator...")
 			}
 			o.shutdown()
 			return nil
@@ -118,18 +118,18 @@ func (o *Orchestrator) drainQueues() {
 	}
 	for _, p := range paths {
 		if err := queue.MarkCompleted(p, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Error draining queue file %s: %v\n", p, err)
+			fmt.Fprintf(os.Stderr, "[bobbi] Error draining queue file %s: %v\n", p, err)
 		}
 	}
 	if len(paths) > 0 {
-		fmt.Printf("[bobbcode] Drained %d remaining queue file(s) to completed\n", len(paths))
+		fmt.Printf("[bobbi] Drained %d remaining queue file(s) to completed\n", len(paths))
 	}
 }
 
 func (o *Orchestrator) poll() {
 	requests, paths, err := queue.ReadRequests(o.queuesDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error reading queues: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error reading queues: %v\n", err)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (o *Orchestrator) poll() {
 		item := workItem{request: req, requestPath: paths[i]}
 		targetAgent := o.routeRequest(req.Request.Type)
 		if targetAgent == "" {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Unknown request type: %s\n", req.Request.Type)
+			fmt.Fprintf(os.Stderr, "[bobbi] Unknown request type: %s\n", req.Request.Type)
 			continue
 		}
 
@@ -180,19 +180,19 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 		default:
 		}
 
-		fmt.Printf("[bobbcode] Processing %s request (from: %s) for %s agent\n",
+		fmt.Printf("[bobbi] Processing %s request (from: %s) for %s agent\n",
 			item.request.Request.Type, item.request.Request.From, agentType)
 		o.processRequest(ctx, agentType, item)
 
 		// Only mark completed if the context wasn't cancelled (i.e. not interrupted)
 		select {
 		case <-ctx.Done():
-			fmt.Printf("[bobbcode] Agent %s was interrupted, leaving request in queue\n", agentType)
+			fmt.Printf("[bobbi] Agent %s was interrupted, leaving request in queue\n", agentType)
 			return
 		default:
 		}
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Error marking completed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
 		}
 	}
 }
@@ -214,7 +214,7 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	// Check context before starting a potentially long agent run
 	select {
 	case <-ctx.Done():
-		fmt.Printf("[bobbcode] Skipping %s agent (shutting down)\n", agentType)
+		fmt.Printf("[bobbi] Skipping %s agent (shutting down)\n", agentType)
 		return
 	default:
 	}
@@ -227,7 +227,7 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 
 	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
 	if err := agent.StartAgent(ctx, agentType, repoDir, prompt); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Agent %s error: %v\n", agentType, err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Agent %s error: %v\n", agentType, err)
 	}
 
 	// Post-agent: copy outputs to dependent repos
@@ -243,7 +243,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
 		if err := CopyRepo(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to solver: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to solver: %v\n", err)
 		}
 
 	case agent.Evaluator:
@@ -251,7 +251,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
 		if err := CopyRepo(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
 		}
 	}
 }
@@ -266,13 +266,13 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 			os.RemoveAll(dst)
 			os.MkdirAll(dst, 0755)
 			if err := CopyRepo(archDir, dst); err != nil {
-				fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to %s: %v\n", target, err)
+				fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to %s: %v\n", target, err)
 			}
 		}
 
 		// After architect, start solver
 		if _, err := queue.WriteRequest(o.queuesDir, "start_solver", "orchestrator", ""); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_solver: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_solver: %v\n", err)
 		}
 	}
 }
@@ -286,7 +286,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstDeliverable)
 	os.MkdirAll(dstDeliverable, 0755)
 	if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying deliverable to evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to evaluator: %v\n", err)
 	}
 
 	// Copy solution source to reviewer (repo copy — skip .git/.claude)
@@ -294,7 +294,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)
 	if err := CopyRepo(solverDir, dstSolution); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying solution to reviewer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error copying solution to reviewer: %v\n", err)
 	}
 
 	// Copy architecture to evaluator (repo copy — skip .git/.claude)
@@ -303,15 +303,15 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstArch)
 	os.MkdirAll(dstArch, 0755)
 	if err := CopyRepo(archDir, dstArch); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
 	}
 
 	// Start evaluator and reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_evaluator: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_evaluator: %v\n", err)
 	}
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error queuing start_reviewer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_reviewer: %v\n", err)
 	}
 }
 
@@ -322,13 +322,13 @@ func (o *Orchestrator) handleConfirmSolution() {
 	os.RemoveAll(dstOutput)
 	os.MkdirAll(dstOutput, 0755)
 	if err := CopyDir(srcDeliverable, dstOutput); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying deliverable to output: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to output: %v\n", err)
 	}
 
-	fmt.Println("[bobbcode] ========================================")
-	fmt.Println("[bobbcode] Solution confirmed and delivered!")
-	fmt.Println("[bobbcode] Output available in: output/")
-	fmt.Println("[bobbcode] ========================================")
+	fmt.Println("[bobbi] ========================================")
+	fmt.Println("[bobbi] Solution confirmed and delivered!")
+	fmt.Println("[bobbi] Output available in: output/")
+	fmt.Println("[bobbi] ========================================")
 
 	// Signal orchestrator to shut down
 	close(o.done)

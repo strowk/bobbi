@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"bobbcode/internal/queue"
+	"bobbi/internal/queue"
 )
 
 type ToolHandler func(args map[string]interface{}) ToolResult
@@ -89,7 +89,7 @@ func HandlersForAgent(agentType string) map[string]ToolHandler {
 	handlers := make(map[string]ToolHandler)
 
 	// Resolve queues dir: agent repos are at <project>/<agent-dir>,
-	// so queues are at ../.bobb/queues/ relative to cwd
+	// so queues are at ../.bobbi/queues/ relative to cwd
 	queuesDir := resolveQueuesDir()
 
 	switch agentType {
@@ -149,7 +149,7 @@ func makeArchChangeHandler(queuesDir, from string) ToolHandler {
 func resolveQueuesDir() string {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return filepath.Join("..", ".bobb", "queues")
+		return filepath.Join("..", ".bobbi", "queues")
 	}
-	return filepath.Join(cwd, "..", ".bobb", "queues")
+	return filepath.Join(cwd, "..", ".bobbi", "queues")
 }

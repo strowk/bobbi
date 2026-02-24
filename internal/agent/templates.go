@@ -122,7 +122,7 @@ func SettingsJSON(workDir string) string {
       "Bash(*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "mcp__bobbcode__*"
+      "mcp__bobbi__*"
     ],
     "deny": []
   }
@@ -134,7 +134,7 @@ func McpJSON(agentType AgentType, bobbBin string) string {
 	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 	return fmt.Sprintf(`{
   "mcpServers": {
-    "bobbcode": {
+    "bobbi": {
       "type": "stdio",
       "command": %q,
       "args": ["mcp", "--agent", %q]

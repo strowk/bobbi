@@ -45,7 +45,7 @@ func Serve(agentType string, stdin io.Reader, stdout io.Writer) error {
 					Tools: &ToolsCapability{},
 				},
 				ServerInfo: ServerInfo{
-					Name:    "bobbcode",
+					Name:    "bobbi",
 					Version: "0.1.0",
 				},
 			}

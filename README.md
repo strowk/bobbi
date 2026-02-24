@@ -1,10 +1,10 @@
 <div align="center">
 
-![BOBB](images/logo.png)
+![BOBBII](images/logo.png)
 
-# BOBB
+# BOBBII
 
-### Black OuroBorotic Box
+### Black OuroBorotic Box Intelligence
 
 *A fully autonomous code development system where isolated AI agents collaborate through structured communication to solve programming problems.*
 
@@ -16,7 +16,7 @@
 
 ## Overview
 
-BOBB orchestrates multiple AI agents -- each with a distinct role and isolated workspace -- to develop, evaluate, and refine code autonomously. Agents communicate indirectly through a queue-based system and never see each other's internals, preventing overfitting and ensuring genuine, independent work.
+BOBBII orchestrates multiple AI agents -- each with a distinct role and isolated workspace -- to develop, evaluate, and refine code autonomously. Agents communicate indirectly through a queue-based system and never see each other's internals, preventing overfitting and ensuring genuine, independent work.
 
 The result is a closed-loop development cycle where a **Solver** writes code, an **Evaluator** tests it, an **Architect** maintains the specification, and a **Reviewer** checks quality -- all without human intervention.
 
@@ -31,25 +31,25 @@ The result is a closed-loop development cycle where a **Solver** writes code, an
 ### Build
 
 ```bash
-go build -o bobbcode .
+go build -o bobbi .
 ```
 
 ### Usage
 
 ```bash
-# Initialize a new BOBB workspace
-bobbcode init
+# Initialize a new BOBBI workspace
+bobbi init
 
 # Start the orchestration loop
-bobbcode up
+bobbi up
 
 # Run the MCP server for a specific agent (used internally)
-bobbcode mcp --agent <solver|evaluator|reviewer>
+bobbi mcp --agent <solver|evaluator|reviewer>
 ```
 
 ## How It Works
 
-BOBB follows an ouroboric development loop:
+BOBBI follows an ouroboric development loop:
 
 ```
   ┌────────┐   problem
@@ -90,9 +90,9 @@ BOBB follows an ouroboric development loop:
 
 | Command | Description |
 |---------|-------------|
-| `bobbcode init` | Scaffolds the workspace: creates `.bobb/`, agent repositories (`solution/`, `evaluation/`, `architecture/`, `review/`), and seeds each with initial context |
-| `bobbcode up` | Starts the main orchestrator loop -- watches queues, schedules agents, and manages the development cycle |
-| `bobbcode mcp --agent <name>` | Launches an MCP server (stdio transport) exposing agent-specific tools for inter-agent communication |
+| `bobbi init` | Scaffolds the workspace: creates `.bobbi/`, agent repositories (`solution/`, `evaluation/`, `architecture/`, `review/`), and seeds each with initial context |
+| `bobbi up` | Starts the main orchestrator loop -- watches queues, schedules agents, and manages the development cycle |
+| `bobbi mcp --agent <name>` | Launches an MCP server (stdio transport) exposing agent-specific tools for inter-agent communication |
 
 ## Architecture
 
@@ -107,11 +107,11 @@ Each agent operates in its own git repository with strictly controlled visibilit
 | **Architect** | Problem specification | Any other repository |
 | **Reviewer** | Solution code, test results | Architecture/specification |
 
-Agents are unaware of BOBB's existence -- they receive only the context relevant to their role.
+Agents are unaware of BOBBI's existence -- they receive only the context relevant to their role.
 
 ### Queue-Based Communication
 
-Agents don't communicate directly. Instead, MCP tool calls produce request files in `.bobb/queues/`:
+Agents don't communicate directly. Instead, MCP tool calls produce request files in `.bobbi/queues/`:
 
 ```yaml
 timestamp: 2024-06-01T12:00:00Z
@@ -127,7 +127,7 @@ The orchestrator watches this directory, dequeues requests in order, and ensures
 
 ```
 project/
-├── .bobb/
+├── .bobbi/
 │   ├── queues/         # Pending request files
 │   └── completed/      # Processed request archive
 ├── architecture/       # Architect's repository

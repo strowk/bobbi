@@ -1,11 +1,11 @@
-# BOBBB - Black OuroBorotic Box
+# BOBBI - Black OuroBorotic Box Intelligence
 
-BOBB is a project aiming to be fully autonomous code developing system.
+BOBBI is a project aiming to be fully autonomous code developing system.
 
-BOBB has following main components:
-- bobbcode - command line tool that starts main loop and manages the system
-    - orchestrator - part of BOBB process that manages agent instances and their interactions
-    - mcp-api - part of BOBB process API that agents can use to request BOBB to communicate with other agents
+BOBBI has following main components:
+- bobbi - command line tool that starts main loop and manages the system
+    - orchestrator - part of BOBBI process that manages agent instances and their interactions
+    - mcp-api - part of BOBBI process API that agents can use to request BOBBI to communicate with other agents
 
 Agents:
 - solver - is responsible to write a solution - code that solves the problem
@@ -21,7 +21,7 @@ Limitations:
 - evaluator MUST NOT see solver's repository of solution to avoid overfitting tests to the solution, evaluator only sees original spec and technical contract
 - reviewer MUST NOT see architect's repository with specs, but can see solution and test repositories and be able to provide feedback on their code quality (ONLY)
 - architect MUST NOT see any other repositories
-- neither of agents should know that they are orchestrated by BOBB nor arhitecture of BOBB, they should only get context important for their work
+- neither of agents should know that they are orchestrated by BOBBI nor arhitecture of BOBBI, they should only get context important for their work
 
 ## Repository structures
 
@@ -59,36 +59,36 @@ review/ # contains code of the reviewer, reviewer is started on working director
 ├── solution/ # content of solver repository, would be ignored by git, but available to reviewer for reading
 ```
 
-### BOBB commands
+### BOBBI commands
 
-`bobbcode init` - creates its own ".bobb" folder, then four folders: solution, evaluation, architecture and review; Initializes git repositories in each of them and creates .claude folders (and .gitignore and everything else required) in each of them with initial context for agents to do their work
-`bobbcode up` - starts the main loop of BOBB, which defines which agents are to be started
-`bobbcode mcp` - starts an MCP server with stdio transport that would allow agents to use MCP to perform controlled communication between each other
+`bobbi init` - creates its own ".bobbi" folder, then four folders: solution, evaluation, architecture and review; Initializes git repositories in each of them and creates .claude folders (and .gitignore and everything else required) in each of them with initial context for agents to do their work
+`bobbi up` - starts the main loop of BOBBI, which defines which agents are to be started
+`bobbi mcp` - starts an MCP server with stdio transport that would allow agents to use MCP to perform controlled communication between each other
 
-### BOBB technical details
+### BOBBI technical details
 
-BOBB should be implemented in Golang.
-BOBB should start agent instances as separate processes, at the moment only implementing start of "claude" with flags `--verbose` and `--output-format=stream-json`, other possible agents might be added later.
-BOBB should provide to agents context in .claude folder in their repositories, that would contain at least:
+BOBBI should be implemented in Golang.
+BOBBI should start agent instances as separate processes, at the moment only implementing start of "claude" with flags `--verbose` and `--output-format=stream-json`, other possible agents might be added later.
+BOBBI should provide to agents context in .claude folder in their repositories, that would contain at least:
 - settings.json - file describing what agent is allowed to do, all tools should be explicitly allowed or denied here, this is important so that agents do not wait for user input
-- CLAUDE.md - file describing what agent is supposed to be doing in general terms, MUST NOT specify details of BOBB architecture, i.e for solver only explains minimum needed context - folder structure and task
-BOBB should initialize repositories with starting ".gitignore" too
+- CLAUDE.md - file describing what agent is supposed to be doing in general terms, MUST NOT specify details of BOBBI architecture, i.e for solver only explains minimum needed context - folder structure and task
+BOBBI should initialize repositories with starting ".gitignore" too
 
-BOBB MCP should include these tools at least:
-- when run as `bobb mcp --agent solver`: 
-  - handoff_solution # BOBB copies solution deliverable from solver repository to evaluation repository, then start evaluator instance, BOBB also copies solution code to reviewer repository and instantiate reviewer
-  - request_architecture_change # BOBB takes arbitrary request and instantiates architect instance with this request passed, after architect changes the architecture, it is copied to solver and evaluator
-- when run as `bobb mcp --agent evaluator`:
-  - request_architecture_change # BOBB takes arbitrary request and instantiates architect instance with this request passed, after architect changes the architecture, it is copied to solver and evaluator
-  - request_solution_change # BOBB takes arbitrary request and instantiates solver instance with this request passed
-  - confirm_solution # BOBB takes solution deliverable and copies it to output
-- when run as `bobb mcp --agent reviewer`:
-  - request_solution_change # BOBB takes arbitrary request and instantiates solver instance with this request passed, after solver changes the solution, it is copied to evaluator and reviewer
+BOBBI MCP should include these tools at least:
+- when run as `bobbi mcp --agent solver`:
+  - handoff_solution # BOBBI copies solution deliverable from solver repository to evaluation repository, then start evaluator instance, BOBBI also copies solution code to reviewer repository and instantiate reviewer
+  - request_architecture_change # BOBBI takes arbitrary request and instantiates architect instance with this request passed, after architect changes the architecture, it is copied to solver and evaluator
+- when run as `bobbi mcp --agent evaluator`:
+  - request_architecture_change # BOBBI takes arbitrary request and instantiates architect instance with this request passed, after architect changes the architecture, it is copied to solver and evaluator
+  - request_solution_change # BOBBI takes arbitrary request and instantiates solver instance with this request passed
+  - confirm_solution # BOBBI takes solution deliverable and copies it to output
+- when run as `bobbi mcp --agent reviewer`:
+  - request_solution_change # BOBBI takes arbitrary request and instantiates solver instance with this request passed, after solver changes the solution, it is copied to evaluator and reviewer
 
-Important design note: when written above "BOBB instantiates" a particular agent, this means that BOBB puts this request to a agent-scoped queue (locally run) and only starts agent instance when no agents of that same type are currently run, i.e no parallel instances of the same agent are run at the same time.
+Important design note: when written above "BOBBI instantiates" a particular agent, this means that BOBBI puts this request to a agent-scoped queue (locally run) and only starts agent instance when no agents of that same type are currently run, i.e no parallel instances of the same agent are run at the same time.
 
 Queuing:
-- BOBB manages queues as files under ".bobb/queues" folder
+- BOBBI manages queues as files under ".bobbi/queues" folder
 - queues are folders with request-<timestamp>.yaml files structured appoximately like this:
 
 ```yaml
@@ -99,8 +99,8 @@ request:
   additional_context: <...> # any additional context needed to process the request, for example commit hash of the solution that is to be evaluated
 ```
 
-### BOBB loop
+### BOBBI loop
 
-When BOBB primary orchestrator starts, it needs to check running queues by reading files under ".bobb/queues" folder, then run agents according to the requests.
-Technically agents (i.e "claude") each start their own BOBB mcp server in their own folders, BOBB mcp server writing queues should work on "../.bobb/queues" folder.
-When new request should enter queue, BOBB writes new file to "../.bobb/queues" folder, then primary orchestrator sees the new file, checks the type of request and enqueues it internally (probably in channel), then when request is scheduled internally instantiates an agent appropriately. When agent finishes work, corresponding in-flight request is removed from the queue (deleted from ".bobb/queues" folder, but then written in ".bobb/completed" folder).
+When BOBBI primary orchestrator starts, it needs to check running queues by reading files under ".bobbi/queues" folder, then run agents according to the requests.
+Technically agents (i.e "claude") each start their own BOBBI mcp server in their own folders, BOBBI mcp server writing queues should work on "../.bobbi/queues" folder.
+When new request should enter queue, BOBBI writes new file to "../.bobbi/queues" folder, then primary orchestrator sees the new file, checks the type of request and enqueues it internally (probably in channel), then when request is scheduled internally instantiates an agent appropriately. When agent finishes work, corresponding in-flight request is removed from the queue (deleted from ".bobbi/queues" folder, but then written in ".bobbi/completed" folder).

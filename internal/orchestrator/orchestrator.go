@@ -161,7 +161,7 @@ func (o *Orchestrator) routeRequest(reqType string) agent.AgentType {
 		return agent.Architect
 	case "start_solver", "request_solution_change":
 		return agent.Solver
-	case "start_evaluator", "handoff_solution":
+	case "start_evaluator", "handoff_solution", "request_evaluation_change":
 		return agent.Evaluator
 	case "start_reviewer":
 		return agent.Reviewer

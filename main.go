@@ -9,7 +9,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: bobbcode <init|up|mcp>\n")
+		fmt.Fprintf(os.Stderr, "Usage: bobbcode <init|up|mcp|feedback>\n")
 		os.Exit(1)
 	}
 
@@ -21,8 +21,10 @@ func main() {
 		err = cmd.Up(os.Args[2:])
 	case "mcp":
 		err = cmd.MCP(os.Args[2:])
+	case "feedback":
+		err = cmd.Feedback(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbcode <init|up|mcp>\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbcode <init|up|mcp|feedback>\n", os.Args[1])
 		os.Exit(1)
 	}
 

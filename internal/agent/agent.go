@@ -161,6 +161,8 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 		switch requestType {
 		case "start_evaluator":
 			return "Read the architecture/ directory to understand the technical contract. The solution deliverable is available in solution-deliverable/. Write tests that verify the solution meets the specification, then run them. If all tests pass, use the confirm_solution MCP tool. If tests fail, use the request_solution_change MCP tool with a description of what needs to be fixed."
+		case "request_evaluation_change":
+			return fmt.Sprintf("Changes to your tests have been requested:\n\n%s\n\nRead the architecture/ directory for the current technical contract. Review and update your tests based on the feedback above. Run the updated tests against the solution deliverable in solution-deliverable/. If all tests pass, use the confirm_solution MCP tool. If tests fail, use the request_solution_change MCP tool with details.", additionalContext)
 		}
 	case Reviewer:
 		switch requestType {

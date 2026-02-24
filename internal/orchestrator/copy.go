@@ -7,8 +7,18 @@ import (
 	"path/filepath"
 )
 
-// CopyDir copies src directory contents to dst, excluding .git/ and .claude/ directories.
+// CopyDir copies src directory contents to dst, always excluding .git/.
+// Use CopyRepo for copying agent repos (also excludes .claude/).
 func CopyDir(src, dst string) error {
+	return copyDir(src, dst, false)
+}
+
+// CopyRepo copies src directory contents to dst, excluding .git/ and .claude/ directories.
+func CopyRepo(src, dst string) error {
+	return copyDir(src, dst, true)
+}
+
+func copyDir(src, dst string, skipClaude bool) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -20,10 +30,11 @@ func CopyDir(src, dst string) error {
 			return err
 		}
 
-		// Skip .git and .claude directories
 		if info.IsDir() {
-			switch info.Name() {
-			case ".git", ".claude":
+			if info.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			if skipClaude && info.Name() == ".claude" {
 				return filepath.SkipDir
 			}
 		}

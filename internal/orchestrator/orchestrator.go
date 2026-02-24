@@ -242,7 +242,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		if err := CopyDir(archDir, dst); err != nil {
+		if err := CopyRepo(archDir, dst); err != nil {
 			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to solver: %v\n", err)
 		}
 
@@ -250,7 +250,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		if err := CopyDir(archDir, dst); err != nil {
+		if err := CopyRepo(archDir, dst); err != nil {
 			fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
 		}
 	}
@@ -265,7 +265,7 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			os.RemoveAll(dst)
 			os.MkdirAll(dst, 0755)
-			if err := CopyDir(archDir, dst); err != nil {
+			if err := CopyRepo(archDir, dst); err != nil {
 				fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to %s: %v\n", target, err)
 			}
 		}
@@ -289,20 +289,20 @@ func (o *Orchestrator) handleHandoffSolution() {
 		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying deliverable to evaluator: %v\n", err)
 	}
 
-	// Copy solution source to reviewer
+	// Copy solution source to reviewer (repo copy — skip .git/.claude)
 	dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)
-	if err := CopyDir(solverDir, dstSolution); err != nil {
+	if err := CopyRepo(solverDir, dstSolution); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying solution to reviewer: %v\n", err)
 	}
 
-	// Copy architecture to evaluator
+	// Copy architecture to evaluator (repo copy — skip .git/.claude)
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 	os.RemoveAll(dstArch)
 	os.MkdirAll(dstArch, 0755)
-	if err := CopyDir(archDir, dstArch); err != nil {
+	if err := CopyRepo(archDir, dstArch); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbcode] Error copying architecture to evaluator: %v\n", err)
 	}
 

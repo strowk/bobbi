@@ -159,7 +159,8 @@ solution-deliverable/
 	case Architect:
 		return common
 	case Reviewer:
-		return `solution/
+		return `evaluation/
+solution/
 ` + common
 	}
 	return ""

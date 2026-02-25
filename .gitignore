@@ -1,2 +1,6 @@
 bobbi-test*
 .claude/settings.local.json
+architecture/
+solution-deliverable/
+.mcp.json
+.claude/settings.json

@@ -2,8 +2,6 @@ package mcp
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"bobbi/internal/queue"
 )
@@ -85,12 +83,8 @@ func ToolsForAgent(agentType string) []Tool {
 	return []Tool{}
 }
 
-func HandlersForAgent(agentType string) map[string]ToolHandler {
+func HandlersForAgent(agentType string, queuesDir string) map[string]ToolHandler {
 	handlers := make(map[string]ToolHandler)
-
-	// Resolve queues dir: agent repos are at <project>/<agent-dir>,
-	// so queues are at ../.bobbi/queues/ relative to cwd
-	queuesDir := resolveQueuesDir()
 
 	switch agentType {
 	case "solver":
@@ -155,10 +149,3 @@ func makeArchChangeHandler(queuesDir, from string) ToolHandler {
 	}
 }
 
-func resolveQueuesDir() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return filepath.Join("..", ".bobbi", "queues")
-	}
-	return filepath.Join(cwd, "..", ".bobbi", "queues")
-}

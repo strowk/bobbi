@@ -53,7 +53,8 @@ func copyDirExcluding(src, dst string, excludeDirs []string) error {
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	dstDir := filepath.Dir(dst)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("create parent dir: %w", err)
 	}
 
@@ -63,12 +64,36 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	// Write to a temp file in the same directory, then atomically rename.
+	// This prevents leaving a corrupt partial file if the copy is interrupted.
+	tmpFile, err := os.CreateTemp(dstDir, ".copyfile-*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	defer dstFile.Close()
+	tmpPath := tmpFile.Name()
 
-	_, err = io.Copy(dstFile, srcFile)
-	return err
+	_, copyErr := io.Copy(tmpFile, srcFile)
+	// Always close before rename; close error matters if copy succeeded.
+	closeErr := tmpFile.Close()
+
+	if copyErr != nil {
+		os.Remove(tmpPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath)
+		return closeErr
+	}
+
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("set file mode: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename temp file: %w", err)
+	}
+
+	return nil
 }

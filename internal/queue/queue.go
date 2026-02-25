@@ -41,12 +41,26 @@ func WriteRequest(queuesDir string, reqType, from, additionalContext string) (st
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	filename := fmt.Sprintf("request-%s.yaml", now.Format("20060102T150405.000000000"))
-	path := filepath.Join(queuesDir, filename)
-
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("write request: %w", err)
+	// Use os.CreateTemp to avoid filename collisions when multiple calls
+	// happen near-simultaneously (e.g., back-to-back WriteRequest calls).
+	pattern := fmt.Sprintf("request-%s-*.yaml", now.Format("20060102T150405.000000000"))
+	tmpFile, err := os.CreateTemp(queuesDir, pattern)
+	if err != nil {
+		return "", fmt.Errorf("create request file: %w", err)
 	}
+	path := tmpFile.Name()
+
+	_, writeErr := tmpFile.Write(data)
+	closeErr := tmpFile.Close()
+	if writeErr != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("write request: %w", writeErr)
+	}
+	if closeErr != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close request file: %w", closeErr)
+	}
+
 	return path, nil
 }
 

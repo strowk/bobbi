@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	mcpserver "bobbi/internal/mcp"
@@ -32,5 +33,36 @@ func MCP(args []string) error {
 		return fmt.Errorf("unknown agent type: %s", agentType)
 	}
 
-	return mcpserver.Serve(agentType, os.Stdin, os.Stdout)
+	queuesDir, err := findQueuesDir()
+	if err != nil {
+		return fmt.Errorf("resolve queues directory: %w", err)
+	}
+
+	return mcpserver.Serve(agentType, queuesDir, os.Stdin, os.Stdout)
+}
+
+// findQueuesDir searches upward from the current working directory for a
+// .bobbi/ directory and returns the path to its queues/ subdirectory.
+func findQueuesDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+
+	dir := cwd
+	for {
+		candidate := filepath.Join(dir, ".bobbi", "queues")
+		if info, err := os.Stat(filepath.Join(dir, ".bobbi")); err == nil && info.IsDir() {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	// Fallback: assume cwd is one level inside the project root
+	return filepath.Join(cwd, "..", ".bobbi", "queues"), nil
 }

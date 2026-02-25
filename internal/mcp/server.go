@@ -8,9 +8,9 @@ import (
 	"os"
 )
 
-func Serve(agentType string, stdin io.Reader, stdout io.Writer) error {
+func Serve(agentType string, queuesDir string, stdin io.Reader, stdout io.Writer) error {
 	tools := ToolsForAgent(agentType)
-	handlers := HandlersForAgent(agentType)
+	handlers := HandlersForAgent(agentType, queuesDir)
 
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

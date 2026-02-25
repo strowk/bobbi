@@ -57,9 +57,12 @@ type Orchestrator struct {
 	startTime      time.Time
 }
 
+const maxRetries = 2 // allow up to 2 retries (3 total attempts)
+
 type workItem struct {
 	request     queue.Request
 	requestPath string
+	retryCount  int
 }
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
@@ -132,6 +135,8 @@ func (o *Orchestrator) GetQueueDepth() int {
 
 // GetStartTime returns when the orchestrator started.
 func (o *Orchestrator) GetStartTime() time.Time {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	return o.startTime
 }
 
@@ -175,7 +180,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// Always signal done when Run exits, so the TUI can detect it and quit.
 	defer o.doneOnce.Do(func() { close(o.done) })
 
+	o.mu.Lock()
 	o.startTime = time.Now()
+	o.mu.Unlock()
 
 	// Apply time limit (0 means no timeout)
 	if o.timeout > 0 {
@@ -279,25 +286,11 @@ func (o *Orchestrator) poll() {
 		switch reqType {
 		case "handoff_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
-			o.handleHandoffSolution()
-			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-				o.log("Error marking completed: %v", err)
-			}
-			atomic.AddInt32(&o.completedCount, 1)
-			o.dispatchedMu.Lock()
-			delete(o.dispatched, paths[i])
-			o.dispatchedMu.Unlock()
+			go o.handleDirectRequest(item, o.handleHandoffSolution)
 			continue
 		case "confirm_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
-			o.handleConfirmSolution()
-			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-				o.log("Error marking completed: %v", err)
-			}
-			atomic.AddInt32(&o.completedCount, 1)
-			o.dispatchedMu.Lock()
-			delete(o.dispatched, paths[i])
-			o.dispatchedMu.Unlock()
+			go o.handleDirectRequest(item, o.handleConfirmSolution)
 			continue
 		}
 
@@ -315,9 +308,29 @@ func (o *Orchestrator) poll() {
 		o.mu.Unlock()
 
 		if ch, ok := o.channels[targetAgent]; ok {
-			ch <- item
+			select {
+			case ch <- item:
+			default:
+				o.log("Channel buffer full for %s agent, dropping request %s", targetAgent, item.requestPath)
+				o.dispatchedMu.Lock()
+				delete(o.dispatched, item.requestPath)
+				o.dispatchedMu.Unlock()
+			}
 		}
 	}
+}
+
+// handleDirectRequest runs a direct handler (handoff/confirm) in a goroutine,
+// completing the request and cleaning up the dispatched entry when done.
+func (o *Orchestrator) handleDirectRequest(item workItem, handler func()) {
+	handler()
+	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
+		o.log("Error marking completed: %v", err)
+	}
+	atomic.AddInt32(&o.completedCount, 1)
+	o.dispatchedMu.Lock()
+	delete(o.dispatched, item.requestPath)
+	o.dispatchedMu.Unlock()
 }
 
 func (o *Orchestrator) routeRequest(reqType string) agent.AgentType {
@@ -345,7 +358,7 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 
 		o.log("Processing %s request (from: %s) for %s agent",
 			item.request.Request.Type, item.request.Request.From, agentType)
-		o.processRequest(ctx, agentType, item)
+		agentErr := o.processRequest(ctx, agentType, item)
 
 		select {
 		case <-ctx.Done():
@@ -353,6 +366,25 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 			return
 		default:
 		}
+
+		if agentErr != nil && item.retryCount < maxRetries {
+			item.retryCount++
+			o.log("Agent %s failed (attempt %d/%d), retrying: %v", agentType, item.retryCount, maxRetries+1, agentErr)
+			// Re-enqueue by sending back to the bidirectional channel (non-blocking)
+			if retryCh, ok := o.channels[agentType]; ok {
+				select {
+				case retryCh <- item:
+				default:
+					o.log("Channel buffer full for %s agent, cannot retry", agentType)
+				}
+			}
+			continue
+		}
+
+		if agentErr != nil {
+			o.log("Agent %s failed after %d attempts, marking request as completed: %v", agentType, item.retryCount+1, agentErr)
+		}
+
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
 			o.log("Error marking completed: %v", err)
 		}
@@ -376,14 +408,14 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.AgentType, item workItem) {
+func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.AgentType, item workItem) error {
 	reqType := item.request.Request.Type
 	addCtx := item.request.Request.AdditionalContext
 
 	select {
 	case <-ctx.Done():
 		o.log("Skipping %s agent (shutting down)", agentType)
-		return
+		return ctx.Err()
 	default:
 	}
 
@@ -436,8 +468,10 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 		}
 	}
 
+	var agentErr error
 	if err := agent.StartAgent(ctx, agentType, repoDir, prompt, opts); err != nil {
 		o.log("Agent %s error: %v", agentType, err)
+		agentErr = err
 	}
 
 	// Update agent state to idle
@@ -451,10 +485,11 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	// Post-agent: copy outputs (skip if context was cancelled)
 	select {
 	case <-ctx.Done():
-		return
+		return ctx.Err()
 	default:
 	}
 	o.postCopy(agentType)
+	return agentErr
 }
 
 func (o *Orchestrator) preCopy(agentType agent.AgentType) {

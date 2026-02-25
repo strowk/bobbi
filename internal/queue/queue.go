@@ -2,7 +2,6 @@ package queue
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -90,12 +89,12 @@ func ReadRequests(queuesDir string) ([]Request, []string, error) {
 		path := filepath.Join(queuesDir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("[queue] failed to read %s: %v", path, err)
+			fmt.Fprintf(os.Stderr, "[queue] failed to read %s: %v\n", path, err)
 			continue
 		}
 		var req Request
 		if err := yaml.Unmarshal(data, &req); err != nil {
-			log.Printf("[queue] failed to parse %s: %v", path, err)
+			fmt.Fprintf(os.Stderr, "[queue] failed to parse %s: %v\n", path, err)
 			continue
 		}
 		requests = append(requests, req)

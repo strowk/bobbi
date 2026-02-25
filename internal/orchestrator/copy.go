@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -20,7 +21,7 @@ func CopySolutionSource(src, dst string) error {
 }
 
 func copyDirExcluding(src, dst string, excludeDirs []string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -31,23 +32,40 @@ func copyDirExcluding(src, dst string, excludeDirs []string) error {
 			return err
 		}
 
-		if info.IsDir() {
-			if info.Name() == ".git" {
+		// Skip symlinks to avoid potential infinite loops
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		if d.IsDir() {
+			// Always exclude .git at any depth
+			if d.Name() == ".git" {
 				return filepath.SkipDir
 			}
-			for _, ex := range excludeDirs {
-				if info.Name() == ex {
-					return filepath.SkipDir
+			// Only exclude specified dirs at the top level (depth 1)
+			if filepath.Dir(rel) == "." && rel != "." {
+				for _, ex := range excludeDirs {
+					if d.Name() == ex {
+						return filepath.SkipDir
+					}
 				}
 			}
 		}
 
 		destPath := filepath.Join(dst, rel)
 
-		if info.IsDir() {
+		if d.IsDir() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
 			return os.MkdirAll(destPath, info.Mode())
 		}
 
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
 		return copyFile(path, destPath, info.Mode())
 	})
 }

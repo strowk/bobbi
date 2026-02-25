@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -122,22 +123,31 @@ You are a code reviewer. Your job is to review solution code for quality.
 func SettingsJSON(workDir string) string {
 	// Normalize to forward slashes so paths are valid on Windows
 	workDir = strings.ReplaceAll(workDir, `\`, "/")
-	return fmt.Sprintf(`{
-  "permissions": {
-    "allow": [
-      "Read(%s/*)",
-      "Write(%s/*)",
-      "Edit(%s/*)",
-      "Glob(%s/*)",
-      "Grep(%s/*)",
-      "Bash(%s/*)",
-      "WebFetch(*)",
-      "WebSearch(*)",
-      "mcp__bobbi__*"
-    ],
-    "deny": []
-  }
-}`, workDir, workDir, workDir, workDir, workDir, workDir)
+	type permissions struct {
+		Allow []string `json:"allow"`
+		Deny  []string `json:"deny"`
+	}
+	type settings struct {
+		Permissions permissions `json:"permissions"`
+	}
+	s := settings{
+		Permissions: permissions{
+			Allow: []string{
+				fmt.Sprintf("Read(%s/*)", workDir),
+				fmt.Sprintf("Write(%s/*)", workDir),
+				fmt.Sprintf("Edit(%s/*)", workDir),
+				fmt.Sprintf("Glob(%s/*)", workDir),
+				fmt.Sprintf("Grep(%s/*)", workDir),
+				fmt.Sprintf("Bash(%s/*)", workDir),
+				"WebFetch(*)",
+				"WebSearch(*)",
+				"mcp__bobbi__*",
+			},
+			Deny: []string{},
+		},
+	}
+	data, _ := json.MarshalIndent(s, "", "  ")
+	return string(data)
 }
 
 func McpJSON(agentType AgentType, bobbBin string) string {

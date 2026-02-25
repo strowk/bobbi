@@ -59,10 +59,6 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	if opts == nil {
 		opts = &StartOptions{}
 	}
-	logf := opts.LogFunc
-	if logf == nil {
-		logf = func(string, ...interface{}) {}
-	}
 
 	bobbBin, err := os.Executable()
 	if err != nil {
@@ -101,7 +97,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	for _, env := range os.Environ() {
 		key := strings.SplitN(env, "=", 2)[0]
 		switch key {
-		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT":
+		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "ANTHROPIC_API_KEY":
 			continue
 		default:
 			cmd.Env = append(cmd.Env, env)
@@ -117,7 +113,6 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	logf("Starting %s agent in %s", agentType, workDir)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("agent %s start: %w", agentType, err)
 	}
@@ -156,7 +151,6 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
-	logf("Agent %s finished", agentType)
 	return nil
 }
 

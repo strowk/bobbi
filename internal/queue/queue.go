@@ -42,27 +42,33 @@ func WriteRequest(queuesDir string, reqType, from, additionalContext string) (st
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Use os.CreateTemp to avoid filename collisions when multiple calls
-	// happen near-simultaneously (e.g., back-to-back WriteRequest calls).
-	pattern := fmt.Sprintf("request-%s-*.yaml", now.Format("20060102T150405.000000000"))
-	tmpFile, err := os.CreateTemp(queuesDir, pattern)
-	if err != nil {
-		return "", fmt.Errorf("create request file: %w", err)
+	// Use exact timestamp format per contract. Increment nanosecond on collision.
+	ts := now
+	var path string
+	for i := 0; i < 1000; i++ {
+		filename := fmt.Sprintf("request-%s.yaml", ts.Format("20060102T150405.000000000"))
+		path = filepath.Join(queuesDir, filename)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if err != nil {
+			if os.IsExist(err) {
+				ts = ts.Add(time.Nanosecond)
+				continue
+			}
+			return "", fmt.Errorf("create request file: %w", err)
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("write request: %w", writeErr)
+		}
+		if closeErr != nil {
+			os.Remove(path)
+			return "", fmt.Errorf("close request file: %w", closeErr)
+		}
+		return path, nil
 	}
-	path := tmpFile.Name()
-
-	_, writeErr := tmpFile.Write(data)
-	closeErr := tmpFile.Close()
-	if writeErr != nil {
-		os.Remove(path)
-		return "", fmt.Errorf("write request: %w", writeErr)
-	}
-	if closeErr != nil {
-		os.Remove(path)
-		return "", fmt.Errorf("close request file: %w", closeErr)
-	}
-
-	return path, nil
+	return "", fmt.Errorf("could not create unique request file after 1000 attempts")
 }
 
 func ReadRequests(queuesDir string) ([]Request, []string, error) {

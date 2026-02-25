@@ -23,6 +23,7 @@ func Up(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	promptFlag := fs.String("p", "", "prompt to pass to architect")
 	rawFlag := fs.Bool("raw", false, "disable Terminal UI and use raw streamed output mode")
+	noLogFlag := fs.Bool("no-log", false, "disable writing logs to file")
 	timeoutFlag := fs.Duration("timeout", 30*time.Minute, "maximum time limit for the entire orchestrator run (0 to disable)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -37,8 +38,16 @@ func Up(args []string) error {
 		return fmt.Errorf("not a bobbi project directory (run 'bobbi init' first)")
 	}
 
-	// Determine raw mode: explicit flag, or fallback when stdout is not a TTY
-	rawMode := *rawFlag || !isatty.IsTerminal(os.Stdout.Fd())
+	explicitRaw := *rawFlag
+	isTTY := isatty.IsTerminal(os.Stdout.Fd())
+	// Use raw mode if explicitly requested or if stdout is not a TTY
+	rawMode := explicitRaw || !isTTY
+
+	// File logging is enabled when:
+	// - NOT in explicit raw mode (--raw flag)
+	// - AND --no-log is not passed
+	// This means: TUI mode logs, non-TTY fallback logs, explicit raw does NOT log
+	enableFileLog := !explicitRaw && !*noLogFlag
 
 	userPrompt := *promptFlag
 
@@ -58,6 +67,15 @@ func Up(args []string) error {
 	defer cancel()
 
 	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag)
+
+	// Enable file logging if applicable
+	if enableFileLog {
+		if err := orch.EnableFileLogging(); err != nil {
+			fmt.Fprintf(os.Stderr, "[bobbi] Warning: could not open log file: %v\n", err)
+		} else {
+			defer orch.CloseLogFile()
+		}
+	}
 
 	if rawMode {
 		// Raw mode: signal handling + direct orchestrator run

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,13 +16,13 @@ import (
 
 // AgentInfo holds the current state of a single agent type for display.
 type AgentInfo struct {
-	Status       string // "idle", "running", "queued"
-	Prompt       string
-	InputTokens  int64 // tokens for the current/latest run
-	OutputTokens int64 // tokens for the current/latest run
+	Status            string // "idle", "running", "queued"
+	Prompt            string
+	InputTokens       int64 // tokens for the current/latest run
+	OutputTokens      int64 // tokens for the current/latest run
 	TotalInputTokens  int64 // cumulative tokens across all runs
 	TotalOutputTokens int64 // cumulative tokens across all runs
-	HasRun       bool
+	HasRun            bool
 }
 
 // Orchestrator manages the lifecycle of agent processes.
@@ -44,6 +45,10 @@ type Orchestrator struct {
 	timeout  time.Duration
 	done     chan struct{} // closed on confirm_solution
 	doneOnce sync.Once
+
+	// File logging
+	logFile   *os.File
+	logFileMu sync.Mutex
 
 	// State for TUI rendering (protected by mu)
 	mu             sync.RWMutex
@@ -73,6 +78,25 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 		timeout:      timeout,
 		done:         make(chan struct{}),
 		agentInfo:    info,
+	}
+}
+
+// EnableFileLogging opens .bobbi/log.txt for writing log output.
+func (o *Orchestrator) EnableFileLogging() error {
+	logPath := filepath.Join(o.baseDir, ".bobbi", "log.txt")
+	f, err := os.Create(logPath)
+	if err != nil {
+		return fmt.Errorf("create log file: %w", err)
+	}
+	o.logFile = f
+	return nil
+}
+
+// CloseLogFile closes the log file if open.
+func (o *Orchestrator) CloseLogFile() {
+	if o.logFile != nil {
+		o.logFile.Close()
+		o.logFile = nil
 	}
 }
 
@@ -129,9 +153,22 @@ func (o *Orchestrator) Done() <-chan struct{} {
 }
 
 func (o *Orchestrator) log(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
 	if o.rawMode {
-		fmt.Fprintf(os.Stderr, "[bobbi] "+format+"\n", args...)
+		fmt.Fprintf(os.Stderr, "[bobbi] %s\n", msg)
 	}
+	o.writeLogLine("orchestrator", msg)
+}
+
+// writeLogLine writes a timestamped line to the log file.
+func (o *Orchestrator) writeLogLine(source, content string) {
+	if o.logFile == nil {
+		return
+	}
+	o.logFileMu.Lock()
+	defer o.logFileMu.Unlock()
+	ts := time.Now().UTC().Format(time.RFC3339)
+	fmt.Fprintf(o.logFile, "%s [%s] %s\n", ts, source, content)
 }
 
 func (o *Orchestrator) Run(ctx context.Context) error {
@@ -325,6 +362,17 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 	}
 }
 
+// logWriter is an io.Writer that writes each line to the orchestrator log file.
+type logWriter struct {
+	orch   *Orchestrator
+	source string
+}
+
+func (w *logWriter) Write(p []byte) (n int, err error) {
+	w.orch.writeLogLine(w.source, string(p))
+	return len(p), nil
+}
+
 func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.AgentType, item workItem) {
 	reqType := item.request.Request.Type
 	addCtx := item.request.Request.AdditionalContext
@@ -351,6 +399,8 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	info.OutputTokens = 0
 	o.mu.Unlock()
 
+	o.log("Starting %s agent", agentType)
+
 	// Build start options
 	opts := &agent.StartOptions{
 		OnTokens: func(input, output int64) {
@@ -371,6 +421,18 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 		opts.StderrWriter = os.Stderr
 	}
 
+	// In TUI mode (or non-TTY fallback with logging), write agent output to log file
+	if o.logFile != nil {
+		agentLogWriter := &logWriter{orch: o, source: string(agentType)}
+		if opts.StdoutWriter != nil {
+			// Raw mode with logging: write to both stdout and log file
+			opts.StdoutWriter = io.MultiWriter(opts.StdoutWriter, agentLogWriter)
+		} else {
+			// TUI mode: write only to log file
+			opts.StdoutWriter = agentLogWriter
+		}
+	}
+
 	if err := agent.StartAgent(ctx, agentType, repoDir, prompt, opts); err != nil {
 		o.log("Agent %s error: %v", agentType, err)
 	}
@@ -381,7 +443,14 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	info.HasRun = true
 	o.mu.Unlock()
 
-	// Post-agent: copy outputs
+	o.log("Agent %s finished", agentType)
+
+	// Post-agent: copy outputs (skip if context was cancelled)
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
 	o.postCopy(agentType)
 }
 

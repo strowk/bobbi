@@ -29,8 +29,9 @@ type Orchestrator struct {
 	dispatchedMu sync.Mutex
 
 	// Time limit for the entire run
-	timeout time.Duration
-	done    chan struct{} // closed on confirm_solution
+	timeout  time.Duration
+	done     chan struct{} // closed on confirm_solution
+	doneOnce sync.Once
 }
 
 type workItem struct {
@@ -143,9 +144,31 @@ func (o *Orchestrator) poll() {
 		o.dispatchedMu.Unlock()
 
 		item := workItem{request: req, requestPath: paths[i]}
-		targetAgent := o.routeRequest(req.Request.Type)
+		reqType := req.Request.Type
+
+		// Handle orchestrator-level actions directly (not routed to agent workers)
+		switch reqType {
+		case "handoff_solution":
+			fmt.Printf("[bobbi] Processing %s request (from: %s) directly\n",
+				reqType, req.Request.From)
+			o.handleHandoffSolution()
+			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
+				fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
+			}
+			continue
+		case "confirm_solution":
+			fmt.Printf("[bobbi] Processing %s request (from: %s) directly\n",
+				reqType, req.Request.From)
+			o.handleConfirmSolution()
+			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
+				fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
+			}
+			continue
+		}
+
+		targetAgent := o.routeRequest(reqType)
 		if targetAgent == "" {
-			fmt.Fprintf(os.Stderr, "[bobbi] Unknown request type: %s\n", req.Request.Type)
+			fmt.Fprintf(os.Stderr, "[bobbi] Unknown request type: %s\n", reqType)
 			continue
 		}
 
@@ -161,12 +184,10 @@ func (o *Orchestrator) routeRequest(reqType string) agent.AgentType {
 		return agent.Architect
 	case "start_solver", "request_solution_change":
 		return agent.Solver
-	case "start_evaluator", "handoff_solution", "request_evaluation_change":
+	case "start_evaluator", "request_evaluation_change":
 		return agent.Evaluator
 	case "start_reviewer":
 		return agent.Reviewer
-	case "confirm_solution":
-		return agent.Evaluator // handled specially
 	}
 	return ""
 }
@@ -201,16 +222,6 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	reqType := item.request.Request.Type
 	addCtx := item.request.Request.AdditionalContext
 
-	switch reqType {
-	case "confirm_solution":
-		o.handleConfirmSolution()
-		return
-
-	case "handoff_solution":
-		o.handleHandoffSolution()
-		return
-	}
-
 	// Check context before starting a potentially long agent run
 	select {
 	case <-ctx.Done():
@@ -242,7 +253,8 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		if err := CopyRepo(archDir, dst); err != nil {
+		// Copy architecture contents excluding only .git
+		if err := CopyDir(archDir, dst); err != nil {
 			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to solver: %v\n", err)
 		}
 
@@ -250,7 +262,8 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		if err := CopyRepo(archDir, dst); err != nil {
+		// Copy architecture contents excluding only .git
+		if err := CopyDir(archDir, dst); err != nil {
 			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
 		}
 	}
@@ -265,7 +278,8 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			os.RemoveAll(dst)
 			os.MkdirAll(dst, 0755)
-			if err := CopyRepo(archDir, dst); err != nil {
+			// Copy architecture contents excluding only .git
+			if err := CopyDir(archDir, dst); err != nil {
 				fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to %s: %v\n", target, err)
 			}
 		}
@@ -280,7 +294,7 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 func (o *Orchestrator) handleHandoffSolution() {
 	solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
 
-	// Copy solution-deliverable to evaluator
+	// 1. Copy solution-deliverable to evaluator
 	srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
 	dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	os.RemoveAll(dstDeliverable)
@@ -289,34 +303,35 @@ func (o *Orchestrator) handleHandoffSolution() {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to evaluator: %v\n", err)
 	}
 
-	// Copy solution source to reviewer (excluding .git/, .claude/, architecture/, solution-deliverable/)
+	// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
 	dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)
-	if err := CopyRepo(solverDir, dstSolution); err != nil {
+	if err := CopySolutionSource(solverDir, dstSolution); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error copying solution to reviewer: %v\n", err)
 	}
 
-	// Copy architecture to evaluator (repo copy — skip .git/.claude)
+	// 3. Copy architecture to evaluator (contents excluding .git/)
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 	os.RemoveAll(dstArch)
 	os.MkdirAll(dstArch, 0755)
-	if err := CopyRepo(archDir, dstArch); err != nil {
+	if err := CopyDir(archDir, dstArch); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
 	}
 
-	// Start evaluator and reviewer
+	// 4. Enqueue start_evaluator
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_evaluator: %v\n", err)
 	}
+	// 5. Enqueue start_reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_reviewer: %v\n", err)
 	}
 }
 
 func (o *Orchestrator) handleConfirmSolution() {
-	// Copy solution deliverable to output directory
+	// 1. Copy evaluation/solution-deliverable/ to output/
 	srcDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	dstOutput := filepath.Join(o.baseDir, "output")
 	os.RemoveAll(dstOutput)
@@ -330,6 +345,6 @@ func (o *Orchestrator) handleConfirmSolution() {
 	fmt.Println("[bobbi] Output available in: output/")
 	fmt.Println("[bobbi] ========================================")
 
-	// Signal orchestrator to shut down
-	close(o.done)
+	// 2. Signal orchestrator to shut down (once-only to avoid panic)
+	o.doneOnce.Do(func() { close(o.done) })
 }

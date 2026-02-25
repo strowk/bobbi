@@ -12,15 +12,11 @@ func CopyDir(src, dst string) error {
 	return copyDirExcluding(src, dst, nil)
 }
 
-// CopyRepo copies src directory contents to dst, excluding .git/, .claude/, architecture/, and solution-deliverable/ directories.
-func CopyRepo(src, dst string) error {
-	return copyDirExcluding(src, dst, []string{".claude", "architecture", "solution-deliverable"})
-}
-
-// CopyRepoExcluding copies src directory contents to dst, excluding .git/ and the given directories.
-func CopyRepoExcluding(src, dst string, excludeDirs []string) error {
-	exclude := append([]string{".claude"}, excludeDirs...)
-	return copyDirExcluding(src, dst, exclude)
+// CopySolutionSource copies src directory contents to dst,
+// excluding .git/, architecture/, and solution-deliverable/ directories
+// as specified by the contract for handoff_solution.
+func CopySolutionSource(src, dst string) error {
+	return copyDirExcluding(src, dst, []string{"architecture", "solution-deliverable"})
 }
 
 func copyDirExcluding(src, dst string, excludeDirs []string) error {

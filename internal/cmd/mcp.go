@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	mcpserver "bobbi/internal/mcp"
 )
@@ -12,6 +13,10 @@ func MCP(args []string) error {
 	for i, arg := range args {
 		if arg == "--agent" && i+1 < len(args) {
 			agentType = args[i+1]
+			break
+		}
+		if strings.HasPrefix(arg, "--agent=") {
+			agentType = strings.TrimPrefix(arg, "--agent=")
 			break
 		}
 	}

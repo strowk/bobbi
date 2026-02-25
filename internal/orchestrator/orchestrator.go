@@ -17,8 +17,10 @@ import (
 type AgentInfo struct {
 	Status       string // "idle", "running", "queued"
 	Prompt       string
-	InputTokens  int64
-	OutputTokens int64
+	InputTokens  int64 // tokens for the current/latest run
+	OutputTokens int64 // tokens for the current/latest run
+	TotalInputTokens  int64 // cumulative tokens across all runs
+	TotalOutputTokens int64 // cumulative tokens across all runs
 	HasRun       bool
 }
 
@@ -109,14 +111,14 @@ func (o *Orchestrator) GetStartTime() time.Time {
 	return o.startTime
 }
 
-// GetTotalTokens returns aggregate token counts across all agents.
+// GetTotalTokens returns aggregate cumulative token counts across all agents.
 func (o *Orchestrator) GetTotalTokens() (int64, int64) {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	var totalIn, totalOut int64
 	for _, info := range o.agentInfo {
-		totalIn += info.InputTokens
-		totalOut += info.OutputTokens
+		totalIn += info.TotalInputTokens
+		totalOut += info.TotalOutputTokens
 	}
 	return totalIn, totalOut
 }
@@ -355,6 +357,8 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 			o.mu.Lock()
 			info.InputTokens += input
 			info.OutputTokens += output
+			info.TotalInputTokens += input
+			info.TotalOutputTokens += output
 			o.mu.Unlock()
 		},
 		LogFunc: func(format string, args ...interface{}) {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"bobbi/internal/queue"
@@ -32,7 +33,7 @@ func Feedback(args []string) error {
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
-	if _, err := os.Stat(cwd + "/.bobbi"); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cwd, ".bobbi")); os.IsNotExist(err) {
 		return fmt.Errorf("not a bobbi project directory (run 'bobbi init' first)")
 	}
 
@@ -50,7 +51,7 @@ func Feedback(args []string) error {
 		return fmt.Errorf("feedback message cannot be empty")
 	}
 
-	queuesDir := cwd + "/.bobbi/queues"
+	queuesDir := filepath.Join(cwd, ".bobbi", "queues")
 	path, err := queue.WriteRequest(queuesDir, reqType, "user", message)
 	if err != nil {
 		return fmt.Errorf("write feedback: %w", err)

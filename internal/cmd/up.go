@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -32,7 +33,7 @@ func Up(args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	if _, err := os.Stat(cwd + "/.bobbi"); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cwd, ".bobbi")); os.IsNotExist(err) {
 		return fmt.Errorf("not a bobbi project directory (run 'bobbi init' first)")
 	}
 
@@ -43,7 +44,7 @@ func Up(args []string) error {
 
 	// If no -p flag and queue is empty, ask the user interactively
 	if userPrompt == "" {
-		queuesDir := cwd + "/.bobbi/queues"
+		queuesDir := filepath.Join(cwd, ".bobbi", "queues")
 		requests, _, err := queue.ReadRequests(queuesDir)
 		if err == nil && len(requests) == 0 {
 			userPrompt, err = askUserForPrompt()

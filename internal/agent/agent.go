@@ -90,7 +90,9 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("resolve workdir: %w", err)
 	}
 	settingsDir := filepath.Join(workDir, ".claude")
-	os.MkdirAll(settingsDir, 0755)
+	if err := os.MkdirAll(settingsDir, 0755); err != nil {
+		return fmt.Errorf("create settings dir: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(SettingsJSON(absWorkDir)), 0644); err != nil {
 		return fmt.Errorf("write settings.json: %w", err)
 	}
@@ -108,7 +110,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	for _, env := range os.Environ() {
 		key := strings.SplitN(env, "=", 2)[0]
 		switch key {
-		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "ANTHROPIC_API_KEY":
+		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT":
 			continue
 		default:
 			cmd.Env = append(cmd.Env, env)

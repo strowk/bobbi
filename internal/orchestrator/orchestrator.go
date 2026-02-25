@@ -286,10 +286,12 @@ func (o *Orchestrator) poll() {
 		switch reqType {
 		case "handoff_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
+			o.wg.Add(1)
 			go o.handleDirectRequest(item, o.handleHandoffSolution)
 			continue
 		case "confirm_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
+			o.wg.Add(1)
 			go o.handleDirectRequest(item, o.handleConfirmSolution)
 			continue
 		}
@@ -323,6 +325,7 @@ func (o *Orchestrator) poll() {
 // handleDirectRequest runs a direct handler (handoff/confirm) in a goroutine,
 // completing the request and cleaning up the dispatched entry when done.
 func (o *Orchestrator) handleDirectRequest(item workItem, handler func()) {
+	defer o.wg.Done()
 	handler()
 	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
 		o.log("Error marking completed: %v", err)
@@ -505,7 +508,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 			o.log("Error creating architecture dir in solver: %v", err)
 			return
 		}
-		if err := CopyDir(archDir, dst); err != nil {
+		if err := CopyArchitectureContract(archDir, dst); err != nil {
 			o.log("Error copying architecture to solver: %v", err)
 		}
 	case agent.Evaluator:
@@ -517,7 +520,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 			o.log("Error creating architecture dir in evaluator: %v", err)
 			return
 		}
-		if err := CopyDir(archDir, dst); err != nil {
+		if err := CopyArchitectureContract(archDir, dst); err != nil {
 			o.log("Error copying architecture to evaluator: %v", err)
 		}
 	}
@@ -536,7 +539,7 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 				o.log("Error creating architecture dir in %s: %v", target, err)
 				continue
 			}
-			if err := CopyDir(archDir, dst); err != nil {
+			if err := CopyArchitectureContract(archDir, dst); err != nil {
 				o.log("Error copying architecture to %s: %v", target, err)
 			}
 		}
@@ -581,7 +584,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	}
 	if err := os.MkdirAll(dstArch, 0755); err != nil {
 		o.log("Error creating architecture dir in evaluator: %v", err)
-	} else if err := CopyDir(archDir, dstArch); err != nil {
+	} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
 		o.log("Error copying architecture to evaluator: %v", err)
 	}
 

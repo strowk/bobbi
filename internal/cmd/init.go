@@ -85,19 +85,12 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) err
 
 	// Create agent-specific dirs and files
 	switch agentType {
-	case agent.Solver:
+	case agent.Solver, agent.Evaluator:
 		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
-			return fmt.Errorf("create solver architecture dir: %w", err)
+			return fmt.Errorf("create %s architecture dir: %w", agentType, err)
 		}
 		if err := os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755); err != nil {
-			return fmt.Errorf("create solver solution-deliverable dir: %w", err)
-		}
-	case agent.Evaluator:
-		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
-			return fmt.Errorf("create evaluator architecture dir: %w", err)
-		}
-		if err := os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755); err != nil {
-			return fmt.Errorf("create evaluator solution-deliverable dir: %w", err)
+			return fmt.Errorf("create %s solution-deliverable dir: %w", agentType, err)
 		}
 	case agent.Architect:
 		// Create empty SPECIFICATION.md

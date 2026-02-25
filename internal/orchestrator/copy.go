@@ -13,6 +13,13 @@ func CopyDir(src, dst string) error {
 	return copyDirExcluding(src, dst, nil)
 }
 
+// CopyArchitectureContract copies src directory contents to dst,
+// excluding .git/, .claude/, .mcp.json, .gitignore, and SPECIFICATION.md
+// so that only the actual architecture contract documents are copied.
+func CopyArchitectureContract(src, dst string) error {
+	return copyDirExcluding(src, dst, []string{".claude", ".mcp.json", ".gitignore", "SPECIFICATION.md"})
+}
+
 // CopySolutionSource copies src directory contents to dst,
 // excluding .git/, architecture/, and solution-deliverable/ directories
 // as specified by the contract for handoff_solution.
@@ -20,7 +27,7 @@ func CopySolutionSource(src, dst string) error {
 	return copyDirExcluding(src, dst, []string{"architecture", "solution-deliverable"})
 }
 
-func copyDirExcluding(src, dst string, excludeDirs []string) error {
+func copyDirExcluding(src, dst string, excludeNames []string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -37,17 +44,19 @@ func copyDirExcluding(src, dst string, excludeDirs []string) error {
 			return nil
 		}
 
-		if d.IsDir() {
-			// Always exclude .git at any depth
-			if d.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			// Only exclude specified dirs at the top level (depth 1)
-			if filepath.Dir(rel) == "." && rel != "." {
-				for _, ex := range excludeDirs {
-					if d.Name() == ex {
+		// Always exclude .git at any depth
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+
+		// Exclude specified names (files or dirs) at the top level
+		if filepath.Dir(rel) == "." && rel != "." {
+			for _, ex := range excludeNames {
+				if d.Name() == ex {
+					if d.IsDir() {
 						return filepath.SkipDir
 					}
+					return nil
 				}
 			}
 		}

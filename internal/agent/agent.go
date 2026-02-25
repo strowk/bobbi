@@ -71,16 +71,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 
 	// Regenerate .mcp.json to point to the correct binary
-	mcpJSON := fmt.Sprintf(`{
-  "mcpServers": {
-    "bobbi": {
-      "type": "stdio",
-      "command": %q,
-      "args": ["mcp", "--agent", %q]
-    }
-  }
-}`, bobbBin, string(agentType))
-	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(mcpJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(McpJSON(agentType, bobbBin)), 0644); err != nil {
 		return fmt.Errorf("write .mcp.json: %w", err)
 	}
 

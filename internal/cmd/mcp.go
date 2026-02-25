@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"bobbi/internal/agent"
 	mcpserver "bobbi/internal/mcp"
 )
 
@@ -38,7 +39,7 @@ func MCP(args []string) error {
 		return fmt.Errorf("resolve queues directory: %w", err)
 	}
 
-	return mcpserver.Serve(agentType, queuesDir, os.Stdin, os.Stdout)
+	return mcpserver.Serve(agent.AgentType(agentType), queuesDir, os.Stdin, os.Stdout)
 }
 
 // findQueuesDir searches upward from the current working directory for a
@@ -63,6 +64,5 @@ func findQueuesDir() (string, error) {
 		dir = parent
 	}
 
-	// Fallback: assume cwd is one level inside the project root
-	return filepath.Join(cwd, "..", ".bobbi", "queues"), nil
+	return "", fmt.Errorf("could not find .bobbi/ directory in any parent of %s", cwd)
 }

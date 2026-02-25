@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"bobbi/internal/agent"
 )
 
-func Serve(agentType string, queuesDir string, stdin io.Reader, stdout io.Writer) error {
+func Serve(agentType agent.AgentType, queuesDir string, stdin io.Reader, stdout io.Writer) error {
 	tools := ToolsForAgent(agentType)
 	handlers := HandlersForAgent(agentType, queuesDir)
 

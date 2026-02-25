@@ -3,14 +3,15 @@ package mcp
 import (
 	"fmt"
 
+	"bobbi/internal/agent"
 	"bobbi/internal/queue"
 )
 
 type ToolHandler func(args map[string]interface{}) ToolResult
 
-func ToolsForAgent(agentType string) []Tool {
+func ToolsForAgent(agentType agent.AgentType) []Tool {
 	switch agentType {
-	case "solver":
+	case agent.Solver:
 		return []Tool{
 			{
 				Name:        "handoff_solution",
@@ -32,7 +33,7 @@ func ToolsForAgent(agentType string) []Tool {
 				},
 			},
 		}
-	case "evaluator":
+	case agent.Evaluator:
 		return []Tool{
 			{
 				Name:        "request_architecture_change",
@@ -65,7 +66,7 @@ func ToolsForAgent(agentType string) []Tool {
 				},
 			},
 		}
-	case "reviewer":
+	case agent.Reviewer:
 		return []Tool{
 			{
 				Name:        "request_solution_change",
@@ -83,11 +84,11 @@ func ToolsForAgent(agentType string) []Tool {
 	return []Tool{}
 }
 
-func HandlersForAgent(agentType string, queuesDir string) map[string]ToolHandler {
+func HandlersForAgent(agentType agent.AgentType, queuesDir string) map[string]ToolHandler {
 	handlers := make(map[string]ToolHandler)
 
 	switch agentType {
-	case "solver":
+	case agent.Solver:
 		handlers["handoff_solution"] = func(args map[string]interface{}) ToolResult {
 			_, err := queue.WriteRequest(queuesDir, "handoff_solution", "solver", "")
 			if err != nil {
@@ -97,7 +98,7 @@ func HandlersForAgent(agentType string, queuesDir string) map[string]ToolHandler
 		}
 		handlers["request_architecture_change"] = makeArchChangeHandler(queuesDir, "solver")
 
-	case "evaluator":
+	case agent.Evaluator:
 		handlers["request_architecture_change"] = makeArchChangeHandler(queuesDir, "evaluator")
 		handlers["request_solution_change"] = func(args map[string]interface{}) ToolResult {
 			reason, ok := args["reason"].(string)
@@ -118,7 +119,7 @@ func HandlersForAgent(agentType string, queuesDir string) map[string]ToolHandler
 			return TextResult("Solution confirmed! The deliverable will be copied to the output directory.")
 		}
 
-	case "reviewer":
+	case agent.Reviewer:
 		handlers["request_solution_change"] = func(args map[string]interface{}) ToolResult {
 			reason, ok := args["reason"].(string)
 			if !ok || reason == "" {

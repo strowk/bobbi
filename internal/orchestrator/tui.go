@@ -97,7 +97,7 @@ func (m TUIModel) View() string {
 	// Header
 	header := fmt.Sprintf(" BOBBI Orchestrator")
 	headerRight := fmt.Sprintf("Elapsed: %s  Queue: %d ", formatDuration(elapsed), queueDepth)
-	padding := w - len(header) - len(headerRight)
+	padding := w - 2 - len(header) - len(headerRight)
 	if padding < 1 {
 		padding = 1
 	}

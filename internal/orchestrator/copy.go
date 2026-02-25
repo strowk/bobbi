@@ -14,10 +14,11 @@ func CopyDir(src, dst string) error {
 }
 
 // CopyArchitectureContract copies src directory contents to dst,
-// excluding .git/, .claude/, .mcp.json, .gitignore, and SPECIFICATION.md
+// excluding .git/, .claude/, .mcp.json, and .gitignore
 // so that only the actual architecture contract documents are copied.
 func CopyArchitectureContract(src, dst string) error {
-	return copyDirExcluding(src, dst, []string{".claude", ".mcp.json", ".gitignore", "SPECIFICATION.md"})
+	// note: DO NOT exclude SPECIFICATION.md file, it is part of architecture
+	return copyDirExcluding(src, dst, []string{".claude", ".mcp.json", ".gitignore"})
 }
 
 // CopySolutionSource copies src directory contents to dst,

@@ -200,7 +200,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	// Bootstrap: if queue is empty, enqueue start_architect
-	requests, _, err := queue.ReadRequests(o.queuesDir)
+	requests, _, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err == nil && len(requests) == 0 {
 		o.log("No pending requests, bootstrapping with start_architect")
 		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", "orchestrator", o.userPrompt); err != nil {
@@ -250,7 +250,7 @@ func (o *Orchestrator) shutdown() {
 }
 
 func (o *Orchestrator) drainQueues() {
-	_, paths, err := queue.ReadRequests(o.queuesDir)
+	_, paths, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err != nil {
 		return
 	}
@@ -265,7 +265,7 @@ func (o *Orchestrator) drainQueues() {
 }
 
 func (o *Orchestrator) poll() {
-	requests, paths, err := queue.ReadRequests(o.queuesDir)
+	requests, paths, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err != nil {
 		o.log("Error reading queues: %v", err)
 		return
@@ -576,23 +576,11 @@ func (o *Orchestrator) handleHandoffSolution() {
 		o.log("Error copying solution to reviewer: %v", err)
 	}
 
-	// 3. Copy architecture to evaluator
-	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
-	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
-	if err := os.RemoveAll(dstArch); err != nil {
-		o.log("Error removing old architecture in evaluator: %v", err)
-	}
-	if err := os.MkdirAll(dstArch, 0755); err != nil {
-		o.log("Error creating architecture dir in evaluator: %v", err)
-	} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
-		o.log("Error copying architecture to evaluator: %v", err)
-	}
-
-	// 4. Enqueue start_evaluator
+	// 3. Enqueue start_evaluator (architecture is copied by preCopy when evaluator starts)
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_evaluator: %v", err)
 	}
-	// 5. Enqueue start_reviewer
+	// 4. Enqueue start_reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_reviewer: %v", err)
 	}

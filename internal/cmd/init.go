@@ -28,14 +28,14 @@ func Init() error {
 		}
 	}
 
-	bobbBin, err := os.Executable()
+	bobbiBin, err := os.Executable()
 	if err != nil {
-		bobbBin = "bobbi"
+		bobbiBin = "bobbi"
 	}
 
 	for _, agentType := range agent.AllTypes() {
 		repoDir := filepath.Join(cwd, agent.RepoDir(agentType))
-		if err := initAgentRepo(repoDir, agentType, bobbBin); err != nil {
+		if err := initAgentRepo(repoDir, agentType, bobbiBin); err != nil {
 			return fmt.Errorf("init %s repo: %w", agentType, err)
 		}
 	}
@@ -49,7 +49,7 @@ func Init() error {
 	return nil
 }
 
-func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) error {
+func initAgentRepo(repoDir string, agentType agent.AgentType, bobbiBin string) error {
 	// Create directories
 	claudeDir := filepath.Join(repoDir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -68,7 +68,7 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) err
 	// Write .mcp.json
 	if err := os.WriteFile(
 		filepath.Join(repoDir, ".mcp.json"),
-		[]byte(agent.McpJSON(agentType, bobBin)),
+		[]byte(agent.McpJSON(agentType, bobbiBin)),
 		0644,
 	); err != nil {
 		return err

@@ -70,7 +70,10 @@ func WriteRequest(queuesDir string, reqType, from, additionalContext string) (st
 	return "", fmt.Errorf("could not create unique request file after 1000 attempts")
 }
 
-func ReadRequests(queuesDir string) ([]Request, []string, error) {
+// LogFunc is an optional logging callback for ReadRequests.
+type LogFunc func(format string, args ...interface{})
+
+func ReadRequests(queuesDir string, logFn LogFunc) ([]Request, []string, error) {
 	entries, err := os.ReadDir(queuesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -89,12 +92,16 @@ func ReadRequests(queuesDir string) ([]Request, []string, error) {
 		path := filepath.Join(queuesDir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[queue] failed to read %s: %v\n", path, err)
+			if logFn != nil {
+				logFn("[queue] failed to read %s: %v", path, err)
+			}
 			continue
 		}
 		var req Request
 		if err := yaml.Unmarshal(data, &req); err != nil {
-			fmt.Fprintf(os.Stderr, "[queue] failed to parse %s: %v\n", path, err)
+			if logFn != nil {
+				logFn("[queue] failed to parse %s: %v", path, err)
+			}
 			continue
 		}
 		requests = append(requests, req)

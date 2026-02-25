@@ -170,6 +170,12 @@ func formatNumber(n int64) string {
 		return "0"
 	}
 	s := fmt.Sprintf("%d", n)
+	// Handle negative prefix separately
+	prefix := ""
+	if s[0] == '-' {
+		prefix = "-"
+		s = s[1:]
+	}
 	// Insert commas
 	var result []byte
 	for i, c := range s {
@@ -178,7 +184,7 @@ func formatNumber(n int64) string {
 		}
 		result = append(result, byte(c))
 	}
-	return string(result)
+	return prefix + string(result)
 }
 
 // truncatePrompt truncates a prompt to maxLen characters.

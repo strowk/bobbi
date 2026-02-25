@@ -60,14 +60,14 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		opts = &StartOptions{}
 	}
 
-	bobbBin, err := os.Executable()
+	bobbiBin, err := os.Executable()
 	if err != nil {
-		bobbBin = "bobbi"
+		bobbiBin = "bobbi"
 	}
-	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
+	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 
 	// Regenerate .mcp.json to point to the correct binary
-	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(McpJSON(agentType, bobbBin)), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(McpJSON(agentType, bobbiBin)), 0644); err != nil {
 		return fmt.Errorf("write .mcp.json: %w", err)
 	}
 
@@ -120,6 +120,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	done := make(chan struct{}, 2)
 
 	// Process stdout: parse JSONL for tokens, forward to writer
+	var scanErr error
 	go func() {
 		scanner := bufio.NewScanner(stdoutPipe)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -130,6 +131,12 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 			}
 			if opts.StdoutWriter != nil {
 				fmt.Fprintln(opts.StdoutWriter, line)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			scanErr = err
+			if opts.LogFunc != nil {
+				opts.LogFunc("stdout scanner error for %s: %v", agentType, err)
 			}
 		}
 		done <- struct{}{}
@@ -150,6 +157,9 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	<-done
 	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
+	}
+	if scanErr != nil {
+		return fmt.Errorf("agent %s stdout scanner: %w", agentType, scanErr)
 	}
 	return nil
 }

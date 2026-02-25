@@ -54,7 +54,7 @@ func Up(args []string) error {
 	// If no -p flag and queue is empty, ask the user interactively
 	if userPrompt == "" {
 		queuesDir := filepath.Join(cwd, ".bobbi", "queues")
-		requests, _, err := queue.ReadRequests(queuesDir)
+		requests, _, err := queue.ReadRequests(queuesDir, nil)
 		if err == nil && len(requests) == 0 {
 			userPrompt, err = askUserForPrompt()
 			if err != nil {

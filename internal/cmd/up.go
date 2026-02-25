@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"bobbi/internal/orchestrator"
 	"bobbi/internal/queue"
@@ -21,6 +22,7 @@ func Up(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	promptFlag := fs.String("p", "", "prompt to pass to architect")
 	rawFlag := fs.Bool("raw", false, "disable Terminal UI and use raw streamed output mode")
+	timeoutFlag := fs.Duration("timeout", 30*time.Minute, "maximum time limit for the entire orchestrator run (0 to disable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -54,7 +56,7 @@ func Up(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.New(cwd, userPrompt, rawMode)
+	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag)
 
 	if rawMode {
 		// Raw mode: signal handling + direct orchestrator run

@@ -55,7 +55,7 @@ type workItem struct {
 	requestPath string
 }
 
-func New(baseDir string, userPrompt string, rawMode bool) *Orchestrator {
+func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
 	info := make(map[agent.AgentType]*AgentInfo)
 	for _, at := range agent.AllTypes() {
 		info[at] = &AgentInfo{Status: "idle"}
@@ -68,7 +68,7 @@ func New(baseDir string, userPrompt string, rawMode bool) *Orchestrator {
 		rawMode:      rawMode,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
-		timeout:      30 * time.Minute,
+		timeout:      timeout,
 		done:         make(chan struct{}),
 		agentInfo:    info,
 	}
@@ -135,9 +135,12 @@ func (o *Orchestrator) log(format string, args ...interface{}) {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	o.startTime = time.Now()
 
-	// Apply time limit
-	ctx, cancel := context.WithTimeout(ctx, o.timeout)
-	defer cancel()
+	// Apply time limit (0 means no timeout)
+	if o.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.timeout)
+		defer cancel()
+	}
 
 	// Create per-agent workers
 	for _, at := range agent.AllTypes() {
@@ -156,7 +159,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}
 	}
 
-	o.log("Time limit: %s", o.timeout)
+	if o.timeout > 0 {
+		o.log("Time limit: %s", o.timeout)
+	} else {
+		o.log("Time limit: none (disabled)")
+	}
 
 	// Poll loop
 	ticker := time.NewTicker(2 * time.Second)

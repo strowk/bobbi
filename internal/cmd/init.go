@@ -15,6 +15,12 @@ func Init() error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
+	// Check if already initialized
+	bobbiDir := filepath.Join(cwd, ".bobbi")
+	if _, err := os.Stat(bobbiDir); err == nil {
+		return fmt.Errorf("already initialized (.bobbi/ directory exists)")
+	}
+
 	// Create .bobbi directories
 	for _, dir := range []string{".bobbi", ".bobbi/queues", ".bobbi/completed"} {
 		if err := os.MkdirAll(filepath.Join(cwd, dir), 0755); err != nil {

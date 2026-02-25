@@ -289,7 +289,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to evaluator: %v\n", err)
 	}
 
-	// Copy solution source to reviewer (repo copy — skip .git/.claude)
+	// Copy solution source to reviewer (excluding .git/, .claude/, architecture/, solution-deliverable/)
 	dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)

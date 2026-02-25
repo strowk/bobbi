@@ -70,7 +70,7 @@ type ToolCallParams struct {
 
 type ToolResult struct {
 	Content []ToolContent `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
+	IsError bool          `json:"isError"`
 }
 
 type ToolContent struct {

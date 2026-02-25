@@ -119,14 +119,14 @@ func SettingsJSON(workDir string) string {
       "Edit(%s/*)",
       "Glob(%s/*)",
       "Grep(%s/*)",
-      "Bash(*)",
+      "Bash(%s/*)",
       "WebFetch(*)",
       "WebSearch(*)",
       "mcp__bobbi__*"
     ],
     "deny": []
   }
-}`, workDir, workDir, workDir, workDir, workDir)
+}`, workDir, workDir, workDir, workDir, workDir, workDir)
 }
 
 func McpJSON(agentType AgentType, bobbBin string) string {

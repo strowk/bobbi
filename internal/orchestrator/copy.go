@@ -8,17 +8,22 @@ import (
 )
 
 // CopyDir copies src directory contents to dst, always excluding .git/.
-// Use CopyRepo for copying agent repos (also excludes .claude/).
 func CopyDir(src, dst string) error {
-	return copyDir(src, dst, false)
+	return copyDirExcluding(src, dst, nil)
 }
 
-// CopyRepo copies src directory contents to dst, excluding .git/ and .claude/ directories.
+// CopyRepo copies src directory contents to dst, excluding .git/, .claude/, architecture/, and solution-deliverable/ directories.
 func CopyRepo(src, dst string) error {
-	return copyDir(src, dst, true)
+	return copyDirExcluding(src, dst, []string{".claude", "architecture", "solution-deliverable"})
 }
 
-func copyDir(src, dst string, skipClaude bool) error {
+// CopyRepoExcluding copies src directory contents to dst, excluding .git/ and the given directories.
+func CopyRepoExcluding(src, dst string, excludeDirs []string) error {
+	exclude := append([]string{".claude"}, excludeDirs...)
+	return copyDirExcluding(src, dst, exclude)
+}
+
+func copyDirExcluding(src, dst string, excludeDirs []string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -34,8 +39,10 @@ func copyDir(src, dst string, skipClaude bool) error {
 			if info.Name() == ".git" {
 				return filepath.SkipDir
 			}
-			if skipClaude && info.Name() == ".claude" {
-				return filepath.SkipDir
+			for _, ex := range excludeDirs {
+				if info.Name() == ex {
+					return filepath.SkipDir
+				}
 			}
 		}
 

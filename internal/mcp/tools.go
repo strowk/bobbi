@@ -82,7 +82,7 @@ func ToolsForAgent(agentType string) []Tool {
 			},
 		}
 	}
-	return nil
+	return []Tool{}
 }
 
 func HandlersForAgent(agentType string) map[string]ToolHandler {

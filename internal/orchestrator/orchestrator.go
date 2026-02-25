@@ -172,6 +172,9 @@ func (o *Orchestrator) writeLogLine(source, content string) {
 }
 
 func (o *Orchestrator) Run(ctx context.Context) error {
+	// Always signal done when Run exits, so the TUI can detect it and quit.
+	defer o.doneOnce.Do(func() { close(o.done) })
+
 	o.startTime = time.Now()
 
 	// Apply time limit (0 means no timeout)

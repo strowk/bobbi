@@ -106,7 +106,10 @@ func HandlersForAgent(agentType string) map[string]ToolHandler {
 	case "evaluator":
 		handlers["request_architecture_change"] = makeArchChangeHandler(queuesDir, "evaluator")
 		handlers["request_solution_change"] = func(args map[string]interface{}) ToolResult {
-			reason, _ := args["reason"].(string)
+			reason, ok := args["reason"].(string)
+			if !ok || reason == "" {
+				return ErrorResult("reason parameter is required")
+			}
 			_, err := queue.WriteRequest(queuesDir, "request_solution_change", "evaluator", reason)
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
@@ -123,7 +126,10 @@ func HandlersForAgent(agentType string) map[string]ToolHandler {
 
 	case "reviewer":
 		handlers["request_solution_change"] = func(args map[string]interface{}) ToolResult {
-			reason, _ := args["reason"].(string)
+			reason, ok := args["reason"].(string)
+			if !ok || reason == "" {
+				return ErrorResult("reason parameter is required")
+			}
 			_, err := queue.WriteRequest(queuesDir, "request_solution_change", "reviewer", reason)
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
@@ -137,7 +143,10 @@ func HandlersForAgent(agentType string) map[string]ToolHandler {
 
 func makeArchChangeHandler(queuesDir, from string) ToolHandler {
 	return func(args map[string]interface{}) ToolResult {
-		reason, _ := args["reason"].(string)
+		reason, ok := args["reason"].(string)
+		if !ok || reason == "" {
+			return ErrorResult("reason parameter is required")
+		}
 		_, err := queue.WriteRequest(queuesDir, "request_architecture_change", from, reason)
 		if err != nil {
 			return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))

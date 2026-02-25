@@ -107,14 +107,9 @@ func MarkCompleted(requestPath, completedDir string) error {
 	filename := filepath.Base(requestPath)
 	destPath := filepath.Join(completedDir, filename)
 
-	data, err := os.ReadFile(requestPath)
-	if err != nil {
-		return fmt.Errorf("read request: %w", err)
+	if err := os.Rename(requestPath, destPath); err != nil {
+		return fmt.Errorf("move request to completed: %w", err)
 	}
 
-	if err := os.WriteFile(destPath, data, 0644); err != nil {
-		return fmt.Errorf("write completed: %w", err)
-	}
-
-	return os.Remove(requestPath)
+	return nil
 }

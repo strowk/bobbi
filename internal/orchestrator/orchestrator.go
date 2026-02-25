@@ -235,6 +235,9 @@ func (o *Orchestrator) poll() {
 				o.log("Error marking completed: %v", err)
 			}
 			atomic.AddInt32(&o.completedCount, 1)
+			o.dispatchedMu.Lock()
+			delete(o.dispatched, paths[i])
+			o.dispatchedMu.Unlock()
 			continue
 		case "confirm_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
@@ -243,6 +246,9 @@ func (o *Orchestrator) poll() {
 				o.log("Error marking completed: %v", err)
 			}
 			atomic.AddInt32(&o.completedCount, 1)
+			o.dispatchedMu.Lock()
+			delete(o.dispatched, paths[i])
+			o.dispatchedMu.Unlock()
 			continue
 		}
 
@@ -302,6 +308,11 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 			o.log("Error marking completed: %v", err)
 		}
 		atomic.AddInt32(&o.completedCount, 1)
+
+		// Clean up dispatched entry to prevent unbounded map growth
+		o.dispatchedMu.Lock()
+		delete(o.dispatched, item.requestPath)
+		o.dispatchedMu.Unlock()
 	}
 }
 
@@ -369,15 +380,25 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 	switch agentType {
 	case agent.Solver:
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "architecture")
-		os.RemoveAll(dst)
-		os.MkdirAll(dst, 0755)
+		if err := os.RemoveAll(dst); err != nil {
+			o.log("Error removing old architecture in solver: %v", err)
+		}
+		if err := os.MkdirAll(dst, 0755); err != nil {
+			o.log("Error creating architecture dir in solver: %v", err)
+			return
+		}
 		if err := CopyDir(archDir, dst); err != nil {
 			o.log("Error copying architecture to solver: %v", err)
 		}
 	case agent.Evaluator:
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
-		os.RemoveAll(dst)
-		os.MkdirAll(dst, 0755)
+		if err := os.RemoveAll(dst); err != nil {
+			o.log("Error removing old architecture in evaluator: %v", err)
+		}
+		if err := os.MkdirAll(dst, 0755); err != nil {
+			o.log("Error creating architecture dir in evaluator: %v", err)
+			return
+		}
 		if err := CopyDir(archDir, dst); err != nil {
 			o.log("Error copying architecture to evaluator: %v", err)
 		}
@@ -390,8 +411,13 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
-			os.RemoveAll(dst)
-			os.MkdirAll(dst, 0755)
+			if err := os.RemoveAll(dst); err != nil {
+				o.log("Error removing old architecture in %s: %v", target, err)
+			}
+			if err := os.MkdirAll(dst, 0755); err != nil {
+				o.log("Error creating architecture dir in %s: %v", target, err)
+				continue
+			}
 			if err := CopyDir(archDir, dst); err != nil {
 				o.log("Error copying architecture to %s: %v", target, err)
 			}
@@ -409,26 +435,35 @@ func (o *Orchestrator) handleHandoffSolution() {
 	// 1. Copy solution-deliverable to evaluator
 	srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
 	dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
-	os.RemoveAll(dstDeliverable)
-	os.MkdirAll(dstDeliverable, 0755)
-	if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
+	if err := os.RemoveAll(dstDeliverable); err != nil {
+		o.log("Error removing old deliverable in evaluator: %v", err)
+	}
+	if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
+		o.log("Error creating deliverable dir in evaluator: %v", err)
+	} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
 		o.log("Error copying deliverable to evaluator: %v", err)
 	}
 
 	// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
 	dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
-	os.RemoveAll(dstSolution)
-	os.MkdirAll(dstSolution, 0755)
-	if err := CopySolutionSource(solverDir, dstSolution); err != nil {
+	if err := os.RemoveAll(dstSolution); err != nil {
+		o.log("Error removing old solution in reviewer: %v", err)
+	}
+	if err := os.MkdirAll(dstSolution, 0755); err != nil {
+		o.log("Error creating solution dir in reviewer: %v", err)
+	} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
 		o.log("Error copying solution to reviewer: %v", err)
 	}
 
 	// 3. Copy architecture to evaluator
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
-	os.RemoveAll(dstArch)
-	os.MkdirAll(dstArch, 0755)
-	if err := CopyDir(archDir, dstArch); err != nil {
+	if err := os.RemoveAll(dstArch); err != nil {
+		o.log("Error removing old architecture in evaluator: %v", err)
+	}
+	if err := os.MkdirAll(dstArch, 0755); err != nil {
+		o.log("Error creating architecture dir in evaluator: %v", err)
+	} else if err := CopyDir(archDir, dstArch); err != nil {
 		o.log("Error copying architecture to evaluator: %v", err)
 	}
 
@@ -446,9 +481,12 @@ func (o *Orchestrator) handleConfirmSolution() {
 	// 1. Copy evaluation/solution-deliverable/ to output/
 	srcDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	dstOutput := filepath.Join(o.baseDir, "output")
-	os.RemoveAll(dstOutput)
-	os.MkdirAll(dstOutput, 0755)
-	if err := CopyDir(srcDeliverable, dstOutput); err != nil {
+	if err := os.RemoveAll(dstOutput); err != nil {
+		o.log("Error removing old output dir: %v", err)
+	}
+	if err := os.MkdirAll(dstOutput, 0755); err != nil {
+		o.log("Error creating output dir: %v", err)
+	} else if err := CopyDir(srcDeliverable, dstOutput); err != nil {
 		o.log("Error copying deliverable to output: %v", err)
 	}
 

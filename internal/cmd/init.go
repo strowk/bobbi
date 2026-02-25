@@ -86,11 +86,19 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) err
 	// Create agent-specific dirs and files
 	switch agentType {
 	case agent.Solver:
-		os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755)
-		os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755)
+		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
+			return fmt.Errorf("create solver architecture dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755); err != nil {
+			return fmt.Errorf("create solver solution-deliverable dir: %w", err)
+		}
 	case agent.Evaluator:
-		os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755)
-		os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755)
+		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
+			return fmt.Errorf("create evaluator architecture dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755); err != nil {
+			return fmt.Errorf("create evaluator solution-deliverable dir: %w", err)
+		}
 	case agent.Architect:
 		// Create empty SPECIFICATION.md
 		specPath := filepath.Join(repoDir, "SPECIFICATION.md")
@@ -100,7 +108,9 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobBin string) err
 			}
 		}
 	case agent.Reviewer:
-		os.MkdirAll(filepath.Join(repoDir, "solution"), 0755)
+		if err := os.MkdirAll(filepath.Join(repoDir, "solution"), 0755); err != nil {
+			return fmt.Errorf("create reviewer solution dir: %w", err)
+		}
 	}
 
 	// Git init + initial commit

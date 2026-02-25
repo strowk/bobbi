@@ -7,7 +7,7 @@ import (
 
 func ClaudeMD(agentType AgentType) string {
 	preamble := `IMPORTANT: Your working directory is the root of this repository.
-ALL file operations MUST use relative paths (e.g. "./architecture/", "./src/").
+ALL file operations MUST use relative paths (e.g. "./src/", "./tests/").
 NEVER access files outside this directory. Do NOT use absolute paths.
 
 `
@@ -32,7 +32,7 @@ You are a software developer. Your job is to implement a solution based on the t
 
 ## Tools
 - Use the handoff_solution MCP tool to submit your solution for evaluation
-- Use the request_architecture_change MCP tool if the technical contract is unclear or contradictory
+- Use the request_architecture_change MCP tool if the technical contract is unclear or contradictory or needs reasonable improvement
 
 ## Rules
 - Focus on implementing what the technical contract specifies

@@ -6,19 +6,29 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"bobbi/internal/agent"
 	"bobbi/internal/queue"
 )
 
+// AgentInfo holds the current state of a single agent type for display.
+type AgentInfo struct {
+	Status       string // "idle", "running", "queued"
+	Prompt       string
+	InputTokens  int64
+	OutputTokens int64
+	HasRun       bool
+}
+
+// Orchestrator manages the lifecycle of agent processes.
 type Orchestrator struct {
 	baseDir      string
 	queuesDir    string
 	completedDir string
-
-	// User-supplied prompt for the architect bootstrap
-	userPrompt string
+	userPrompt   string
+	rawMode      bool
 
 	// Per-agent work channels enforce serial execution per agent type
 	channels map[agent.AgentType]chan workItem
@@ -32,6 +42,12 @@ type Orchestrator struct {
 	timeout  time.Duration
 	done     chan struct{} // closed on confirm_solution
 	doneOnce sync.Once
+
+	// State for TUI rendering (protected by mu)
+	mu             sync.RWMutex
+	agentInfo      map[agent.AgentType]*AgentInfo
+	completedCount int32 // atomic
+	startTime      time.Time
 }
 
 type workItem struct {
@@ -39,20 +55,86 @@ type workItem struct {
 	requestPath string
 }
 
-func New(baseDir string, userPrompt string) *Orchestrator {
+func New(baseDir string, userPrompt string, rawMode bool) *Orchestrator {
+	info := make(map[agent.AgentType]*AgentInfo)
+	for _, at := range agent.AllTypes() {
+		info[at] = &AgentInfo{Status: "idle"}
+	}
 	return &Orchestrator{
 		baseDir:      baseDir,
 		queuesDir:    filepath.Join(baseDir, ".bobbi", "queues"),
 		completedDir: filepath.Join(baseDir, ".bobbi", "completed"),
 		userPrompt:   userPrompt,
+		rawMode:      rawMode,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
 		timeout:      30 * time.Minute,
 		done:         make(chan struct{}),
+		agentInfo:    info,
+	}
+}
+
+// GetAgentInfo returns a copy of the agent info for the given type.
+func (o *Orchestrator) GetAgentInfo(at agent.AgentType) AgentInfo {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	if info, ok := o.agentInfo[at]; ok {
+		return *info
+	}
+	return AgentInfo{Status: "idle"}
+}
+
+// GetCompletedCount returns the number of completed requests.
+func (o *Orchestrator) GetCompletedCount() int {
+	return int(atomic.LoadInt32(&o.completedCount))
+}
+
+// GetQueueDepth returns the number of files in the queues directory.
+func (o *Orchestrator) GetQueueDepth() int {
+	entries, err := os.ReadDir(o.queuesDir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			count++
+		}
+	}
+	return count
+}
+
+// GetStartTime returns when the orchestrator started.
+func (o *Orchestrator) GetStartTime() time.Time {
+	return o.startTime
+}
+
+// GetTotalTokens returns aggregate token counts across all agents.
+func (o *Orchestrator) GetTotalTokens() (int64, int64) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var totalIn, totalOut int64
+	for _, info := range o.agentInfo {
+		totalIn += info.InputTokens
+		totalOut += info.OutputTokens
+	}
+	return totalIn, totalOut
+}
+
+// Done returns a channel that is closed when the orchestrator is done.
+func (o *Orchestrator) Done() <-chan struct{} {
+	return o.done
+}
+
+func (o *Orchestrator) log(format string, args ...interface{}) {
+	if o.rawMode {
+		fmt.Fprintf(os.Stderr, "[bobbi] "+format+"\n", args...)
 	}
 }
 
 func (o *Orchestrator) Run(ctx context.Context) error {
+	o.startTime = time.Now()
+
 	// Apply time limit
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
 	defer cancel()
@@ -68,33 +150,33 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// Bootstrap: if queue is empty, enqueue start_architect
 	requests, _, err := queue.ReadRequests(o.queuesDir)
 	if err == nil && len(requests) == 0 {
-		fmt.Println("[bobbi] No pending requests, bootstrapping with start_architect")
+		o.log("No pending requests, bootstrapping with start_architect")
 		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", "orchestrator", o.userPrompt); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
 
-	fmt.Printf("[bobbi] Time limit: %s\n", o.timeout)
+	o.log("Time limit: %s", o.timeout)
 
 	// Poll loop
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	// Do an immediate poll before waiting
+	// Immediate poll
 	o.poll()
 
 	for {
 		select {
 		case <-o.done:
-			fmt.Println("[bobbi] Solution confirmed, shutting down...")
+			o.log("Solution confirmed, shutting down...")
 			o.shutdown()
 			o.drainQueues()
 			return nil
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
-				fmt.Printf("[bobbi] Time limit of %s reached, shutting down...\n", o.timeout)
+				o.log("Time limit of %s reached, shutting down...", o.timeout)
 			} else {
-				fmt.Println("[bobbi] Shutting down orchestrator...")
+				o.log("Shutting down orchestrator...")
 			}
 			o.shutdown()
 			return nil
@@ -111,7 +193,6 @@ func (o *Orchestrator) shutdown() {
 	o.wg.Wait()
 }
 
-// drainQueues moves any remaining queue files to completed on shutdown.
 func (o *Orchestrator) drainQueues() {
 	_, paths, err := queue.ReadRequests(o.queuesDir)
 	if err != nil {
@@ -119,18 +200,18 @@ func (o *Orchestrator) drainQueues() {
 	}
 	for _, p := range paths {
 		if err := queue.MarkCompleted(p, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbi] Error draining queue file %s: %v\n", p, err)
+			o.log("Error draining queue file %s: %v", p, err)
 		}
 	}
 	if len(paths) > 0 {
-		fmt.Printf("[bobbi] Drained %d remaining queue file(s) to completed\n", len(paths))
+		o.log("Drained %d remaining queue file(s) to completed", len(paths))
 	}
 }
 
 func (o *Orchestrator) poll() {
 	requests, paths, err := queue.ReadRequests(o.queuesDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error reading queues: %v\n", err)
+		o.log("Error reading queues: %v", err)
 		return
 	}
 
@@ -146,31 +227,37 @@ func (o *Orchestrator) poll() {
 		item := workItem{request: req, requestPath: paths[i]}
 		reqType := req.Request.Type
 
-		// Handle orchestrator-level actions directly (not routed to agent workers)
 		switch reqType {
 		case "handoff_solution":
-			fmt.Printf("[bobbi] Processing %s request (from: %s) directly\n",
-				reqType, req.Request.From)
+			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
 			o.handleHandoffSolution()
 			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-				fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
+				o.log("Error marking completed: %v", err)
 			}
+			atomic.AddInt32(&o.completedCount, 1)
 			continue
 		case "confirm_solution":
-			fmt.Printf("[bobbi] Processing %s request (from: %s) directly\n",
-				reqType, req.Request.From)
+			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
 			o.handleConfirmSolution()
 			if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-				fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
+				o.log("Error marking completed: %v", err)
 			}
+			atomic.AddInt32(&o.completedCount, 1)
 			continue
 		}
 
 		targetAgent := o.routeRequest(reqType)
 		if targetAgent == "" {
-			fmt.Fprintf(os.Stderr, "[bobbi] Unknown request type: %s\n", reqType)
+			o.log("Unknown request type: %s", reqType)
 			continue
 		}
+
+		// Mark agent as queued if it's idle
+		o.mu.Lock()
+		if info, ok := o.agentInfo[targetAgent]; ok && info.Status == "idle" {
+			info.Status = "queued"
+		}
+		o.mu.Unlock()
 
 		if ch, ok := o.channels[targetAgent]; ok {
 			ch <- item
@@ -201,20 +288,20 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 		default:
 		}
 
-		fmt.Printf("[bobbi] Processing %s request (from: %s) for %s agent\n",
+		o.log("Processing %s request (from: %s) for %s agent",
 			item.request.Request.Type, item.request.Request.From, agentType)
 		o.processRequest(ctx, agentType, item)
 
-		// Only mark completed if the context wasn't cancelled (i.e. not interrupted)
 		select {
 		case <-ctx.Done():
-			fmt.Printf("[bobbi] Agent %s was interrupted, leaving request in queue\n", agentType)
+			o.log("Agent %s was interrupted, leaving request in queue", agentType)
 			return
 		default:
 		}
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbi] Error marking completed: %v\n", err)
+			o.log("Error marking completed: %v", err)
 		}
+		atomic.AddInt32(&o.completedCount, 1)
 	}
 }
 
@@ -222,26 +309,57 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	reqType := item.request.Request.Type
 	addCtx := item.request.Request.AdditionalContext
 
-	// Check context before starting a potentially long agent run
 	select {
 	case <-ctx.Done():
-		fmt.Printf("[bobbi] Skipping %s agent (shutting down)\n", agentType)
+		o.log("Skipping %s agent (shutting down)", agentType)
 		return
 	default:
 	}
 
-	// Run the agent
 	repoDir := filepath.Join(o.baseDir, agent.RepoDir(agentType))
+	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
 
-	// Pre-agent: copy relevant content into agent's repo
+	// Pre-agent: copy relevant content
 	o.preCopy(agentType)
 
-	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
-	if err := agent.StartAgent(ctx, agentType, repoDir, prompt); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Agent %s error: %v\n", agentType, err)
+	// Update agent state to running
+	o.mu.Lock()
+	info := o.agentInfo[agentType]
+	info.Status = "running"
+	info.Prompt = prompt
+	info.InputTokens = 0
+	info.OutputTokens = 0
+	o.mu.Unlock()
+
+	// Build start options
+	opts := &agent.StartOptions{
+		OnTokens: func(input, output int64) {
+			o.mu.Lock()
+			info.InputTokens += input
+			info.OutputTokens += output
+			o.mu.Unlock()
+		},
+		LogFunc: func(format string, args ...interface{}) {
+			o.log(format, args...)
+		},
 	}
 
-	// Post-agent: copy outputs to dependent repos
+	if o.rawMode {
+		opts.StdoutWriter = os.Stdout
+		opts.StderrWriter = os.Stderr
+	}
+
+	if err := agent.StartAgent(ctx, agentType, repoDir, prompt, opts); err != nil {
+		o.log("Agent %s error: %v", agentType, err)
+	}
+
+	// Update agent state to idle
+	o.mu.Lock()
+	info.Status = "idle"
+	info.HasRun = true
+	o.mu.Unlock()
+
+	// Post-agent: copy outputs
 	o.postCopy(agentType)
 }
 
@@ -253,18 +371,15 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		// Copy architecture contents excluding only .git
 		if err := CopyDir(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to solver: %v\n", err)
+			o.log("Error copying architecture to solver: %v", err)
 		}
-
 	case agent.Evaluator:
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		os.RemoveAll(dst)
 		os.MkdirAll(dst, 0755)
-		// Copy architecture contents excluding only .git
 		if err := CopyDir(archDir, dst); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
+			o.log("Error copying architecture to evaluator: %v", err)
 		}
 	}
 }
@@ -273,20 +388,17 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 	switch agentType {
 	case agent.Architect:
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
-
 		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			os.RemoveAll(dst)
 			os.MkdirAll(dst, 0755)
-			// Copy architecture contents excluding only .git
 			if err := CopyDir(archDir, dst); err != nil {
-				fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to %s: %v\n", target, err)
+				o.log("Error copying architecture to %s: %v", target, err)
 			}
 		}
-
 		// After architect, start solver
 		if _, err := queue.WriteRequest(o.queuesDir, "start_solver", "orchestrator", ""); err != nil {
-			fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_solver: %v\n", err)
+			o.log("Error queuing start_solver: %v", err)
 		}
 	}
 }
@@ -300,7 +412,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstDeliverable)
 	os.MkdirAll(dstDeliverable, 0755)
 	if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to evaluator: %v\n", err)
+		o.log("Error copying deliverable to evaluator: %v", err)
 	}
 
 	// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
@@ -308,25 +420,25 @@ func (o *Orchestrator) handleHandoffSolution() {
 	os.RemoveAll(dstSolution)
 	os.MkdirAll(dstSolution, 0755)
 	if err := CopySolutionSource(solverDir, dstSolution); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error copying solution to reviewer: %v\n", err)
+		o.log("Error copying solution to reviewer: %v", err)
 	}
 
-	// 3. Copy architecture to evaluator (contents excluding .git/)
+	// 3. Copy architecture to evaluator
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 	os.RemoveAll(dstArch)
 	os.MkdirAll(dstArch, 0755)
 	if err := CopyDir(archDir, dstArch); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error copying architecture to evaluator: %v\n", err)
+		o.log("Error copying architecture to evaluator: %v", err)
 	}
 
 	// 4. Enqueue start_evaluator
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_evaluator: %v\n", err)
+		o.log("Error queuing start_evaluator: %v", err)
 	}
 	// 5. Enqueue start_reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error queuing start_reviewer: %v\n", err)
+		o.log("Error queuing start_reviewer: %v", err)
 	}
 }
 
@@ -337,14 +449,14 @@ func (o *Orchestrator) handleConfirmSolution() {
 	os.RemoveAll(dstOutput)
 	os.MkdirAll(dstOutput, 0755)
 	if err := CopyDir(srcDeliverable, dstOutput); err != nil {
-		fmt.Fprintf(os.Stderr, "[bobbi] Error copying deliverable to output: %v\n", err)
+		o.log("Error copying deliverable to output: %v", err)
 	}
 
-	fmt.Println("[bobbi] ========================================")
-	fmt.Println("[bobbi] Solution confirmed and delivered!")
-	fmt.Println("[bobbi] Output available in: output/")
-	fmt.Println("[bobbi] ========================================")
+	o.log("========================================")
+	o.log("Solution confirmed and delivered!")
+	o.log("Output available in: output/")
+	o.log("========================================")
 
-	// 2. Signal orchestrator to shut down (once-only to avoid panic)
+	// 2. Signal orchestrator to shut down
 	o.doneOnce.Do(func() { close(o.done) })
 }

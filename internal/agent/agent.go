@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -37,18 +39,38 @@ func RepoDir(agentType AgentType) string {
 	return string(agentType)
 }
 
-// StartAgent launches a claude process for the given agent type in the given working directory.
-// The prompt describes the task to perform. It blocks until the agent finishes.
-// If the context is cancelled, the child process is killed.
-func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt string) error {
+// StartOptions configures agent process I/O and callbacks.
+type StartOptions struct {
+	// OnTokens is called for each JSONL assistant event with token usage.
+	// input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+	// output = output_tokens
+	OnTokens func(input, output int64)
+	// StdoutWriter receives all stdout lines. If nil, stdout is discarded.
+	StdoutWriter io.Writer
+	// StderrWriter receives all stderr lines. If nil, stderr is discarded.
+	StderrWriter io.Writer
+	// LogFunc is called for log messages. If nil, logs are discarded.
+	LogFunc func(format string, args ...interface{})
+}
+
+// StartAgent launches a claude process for the given agent type.
+// It blocks until the agent finishes or the context is cancelled.
+func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt string, opts *StartOptions) error {
+	if opts == nil {
+		opts = &StartOptions{}
+	}
+	logf := opts.LogFunc
+	if logf == nil {
+		logf = func(string, ...interface{}) {}
+	}
+
 	bobbBin, err := os.Executable()
 	if err != nil {
 		bobbBin = "bobbi"
 	}
-	// Normalize to forward slashes for valid JSON on Windows
 	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
 
-	// Ensure .mcp.json points to the right bobbi binary
+	// Regenerate .mcp.json to point to the correct binary
 	mcpJSON := fmt.Sprintf(`{
   "mcpServers": {
     "bobbi": {
@@ -58,25 +80,21 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
     }
   }
 }`, bobbBin, string(agentType))
-	mcpPath := filepath.Join(workDir, ".mcp.json")
-	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(mcpJSON), 0644); err != nil {
 		return fmt.Errorf("write .mcp.json: %w", err)
 	}
 
-	// Write scoped settings.json with permissions restricted to agent's workDir
+	// Regenerate .claude/settings.json with correct absolute paths
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return fmt.Errorf("resolve workdir: %w", err)
 	}
 	settingsDir := filepath.Join(workDir, ".claude")
 	os.MkdirAll(settingsDir, 0755)
-	settingsPath := filepath.Join(settingsDir, "settings.json")
-	if err := os.WriteFile(settingsPath, []byte(SettingsJSON(absWorkDir)), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(SettingsJSON(absWorkDir)), 0644); err != nil {
 		return fmt.Errorf("write settings.json: %w", err)
 	}
 
-	// Pass prompt via stdin instead of -p argument, because on Windows
-	// the claude .cmd batch shim truncates arguments at newlines
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p", "-",
 		"--dangerously-skip-permissions",
@@ -86,21 +104,17 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)
 
-	// Strip env vars so child claude uses subscription auth (not API key)
-	// and doesn't think it's inside an existing session
+	// Strip env vars so child claude doesn't inherit parent session state
 	for _, env := range os.Environ() {
 		key := strings.SplitN(env, "=", 2)[0]
 		switch key {
-		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT",
-			"ANTHROPIC_API_KEY":
+		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "ANTHROPIC_API_KEY":
 			continue
 		default:
 			cmd.Env = append(cmd.Env, env)
 		}
 	}
 
-	// Pipe output through Go rather than inheriting handles directly,
-	// which can silently lose output on Windows/MINGW
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
@@ -110,20 +124,36 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	fmt.Printf("[bobbi] Starting %s agent in %s\n", agentType, workDir)
-	fmt.Printf("[bobbi] Command: %s\n", strings.Join(cmd.Args, " "))
+	logf("Starting %s agent in %s", agentType, workDir)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("agent %s start: %w", agentType, err)
 	}
 
-	// Copy child output to terminal in background
-	done := make(chan struct{})
+	done := make(chan struct{}, 2)
+
+	// Process stdout: parse JSONL for tokens, forward to writer
 	go func() {
-		io.Copy(os.Stdout, stdoutPipe)
+		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if opts.OnTokens != nil {
+				parseTokenUsage(line, opts.OnTokens)
+			}
+			if opts.StdoutWriter != nil {
+				fmt.Fprintln(opts.StdoutWriter, line)
+			}
+		}
 		done <- struct{}{}
 	}()
+
+	// Process stderr
 	go func() {
-		io.Copy(os.Stderr, stderrPipe)
+		if opts.StderrWriter != nil {
+			io.Copy(opts.StderrWriter, stderrPipe)
+		} else {
+			io.Copy(io.Discard, stderrPipe)
+		}
 		done <- struct{}{}
 	}()
 
@@ -133,8 +163,38 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
-	fmt.Printf("[bobbi] Agent %s finished\n", agentType)
+	logf("Agent %s finished", agentType)
 	return nil
+}
+
+// claudeEvent represents the relevant fields of a JSONL event from claude's stream-json output.
+type claudeEvent struct {
+	Type    string `json:"type"`
+	Message *struct {
+		Usage *struct {
+			InputTokens              int64 `json:"input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+// parseTokenUsage extracts token usage from a JSONL line and calls onTokens if found.
+func parseTokenUsage(line string, onTokens func(input, output int64)) {
+	var event claudeEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
+	}
+	if event.Type != "assistant" || event.Message == nil || event.Message.Usage == nil {
+		return
+	}
+	u := event.Message.Usage
+	input := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+	output := u.OutputTokens
+	if input > 0 || output > 0 {
+		onTokens(input, output)
+	}
 }
 
 // BuildPrompt returns the task prompt for an agent given a request type and context.
@@ -144,32 +204,31 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 		switch requestType {
 		case "start_architect":
 			if additionalContext != "" {
-				return fmt.Sprintf("The user has provided the following instructions:\n\n%s\n\nRead the SPECIFICATION.md file in your repository. Based on the specification and the user's instructions above, update the technical contract that describes what the solution should implement and how the evaluator should test it. Update any necessary contract files. When done, commit your changes with a descriptive message.", additionalContext)
+				return fmt.Sprintf("Read SPECIFICATION.md and create/update the technical contract. %s", additionalContext)
 			}
-			return "Read the SPECIFICATION.md file in your repository. Based on it, create a detailed technical contract that describes what the solution should implement and how the evaluator should test it. Create any necessary contract files. When done, commit your changes with a descriptive message."
+			return "Read SPECIFICATION.md and create/update the technical contract."
 		case "request_architecture_change":
-			return fmt.Sprintf("A change to the architecture has been requested:\n\n%s\n\nReview and update the technical contract and any related files accordingly. When done, commit your changes with a descriptive message.", additionalContext)
+			return fmt.Sprintf("A change to the technical contract has been requested: %s. Review and update the contract as needed.", additionalContext)
 		}
 	case Solver:
 		switch requestType {
 		case "start_solver":
-			return "Read the architecture/ directory to understand the technical contract. Implement the solution according to the specification. Build/compile your solution and place the deliverable output in the solution-deliverable/ directory. When done, commit your source changes with a descriptive message, then use the handoff_solution MCP tool to submit your work for evaluation."
+			return "Read the technical contract in architecture/ and implement the solution. Build the deliverable and place it in solution-deliverable/, then use the handoff_solution tool."
 		case "request_solution_change":
-			return fmt.Sprintf("Changes to your solution have been requested:\n\n%s\n\nRead the architecture/ directory for the current technical contract. Make the requested changes, rebuild, and place the updated deliverable in solution-deliverable/. Commit your changes, then use the handoff_solution MCP tool to submit your work for evaluation.", additionalContext)
+			return fmt.Sprintf("A change to the solution has been requested: %s. Address the feedback and resubmit.", additionalContext)
 		}
 	case Evaluator:
 		switch requestType {
 		case "start_evaluator":
-			return "Read the architecture/ directory to understand the technical contract. The solution deliverable is available in solution-deliverable/. Write tests that verify the solution meets the specification, then run them. If all tests pass, use the confirm_solution MCP tool. If tests fail, use the request_solution_change MCP tool with a description of what needs to be fixed."
+			return "A solution deliverable is available in solution-deliverable/. The technical contract is in architecture/. Write and run tests against the deliverable. Provide feedback or confirm the solution."
 		case "request_evaluation_change":
-			return fmt.Sprintf("Changes to your tests have been requested:\n\n%s\n\nRead the architecture/ directory for the current technical contract. Review and update your tests based on the feedback above. Run the updated tests against the solution deliverable in solution-deliverable/. If all tests pass, use the confirm_solution MCP tool. If tests fail, use the request_solution_change MCP tool with details.", additionalContext)
+			return fmt.Sprintf("A change to the test suite has been requested: %s. Update the tests accordingly.", additionalContext)
 		}
 	case Reviewer:
 		switch requestType {
 		case "start_reviewer":
-			return "Review the code in the solution/ directory for code quality issues. Focus on: correctness, readability, maintainability, and potential bugs. If you find issues that should be fixed, use the request_solution_change MCP tool with specific feedback. If the code quality is acceptable, simply commit a review summary note."
+			return "Solution code is available in solution/. Review it for code quality and provide feedback."
 		}
 	}
-
 	return fmt.Sprintf("Perform the task: %s\nContext: %s", requestType, additionalContext)
 }

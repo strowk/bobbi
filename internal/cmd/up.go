@@ -12,11 +12,15 @@ import (
 
 	"bobbi/internal/orchestrator"
 	"bobbi/internal/queue"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 )
 
 func Up(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	promptFlag := fs.String("p", "", "prompt to pass to architect (e.g. bobbi up -p 'change the API to use REST')")
+	promptFlag := fs.String("p", "", "prompt to pass to architect")
+	rawFlag := fs.Bool("raw", false, "disable Terminal UI and use raw streamed output mode")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -26,10 +30,12 @@ func Up(args []string) error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 
-	// Verify .bobbi directory exists
 	if _, err := os.Stat(cwd + "/.bobbi"); os.IsNotExist(err) {
 		return fmt.Errorf("not a bobbi project directory (run 'bobbi init' first)")
 	}
+
+	// Determine raw mode: explicit flag, or fallback when stdout is not a TTY
+	rawMode := *rawFlag || !isatty.IsTerminal(os.Stdout.Fd())
 
 	userPrompt := *promptFlag
 
@@ -48,18 +54,40 @@ func Up(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle signals for graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	orch := orchestrator.New(cwd, userPrompt, rawMode)
+
+	if rawMode {
+		// Raw mode: signal handling + direct orchestrator run
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			fmt.Fprintf(os.Stderr, "\n[bobbi] Received signal, shutting down...\n")
+			cancel()
+		}()
+
+		fmt.Fprintln(os.Stderr, "[bobbi] Starting orchestrator (raw mode)...")
+		return orch.Run(ctx)
+	}
+
+	// TUI mode
+	model := orchestrator.NewTUIModel(orch, cancel)
+	program := tea.NewProgram(model, tea.WithAltScreen())
+
+	errCh := make(chan error, 1)
 	go func() {
-		sig := <-sigCh
-		fmt.Printf("\n[bobbi] Received signal %v, shutting down...\n", sig)
-		cancel()
+		errCh <- orch.Run(ctx)
 	}()
 
-	orch := orchestrator.New(cwd, userPrompt)
-	fmt.Println("[bobbi] Starting orchestrator...")
-	return orch.Run(ctx)
+	if _, err := program.Run(); err != nil {
+		cancel()
+		<-errCh
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	cancel()
+	orchErr := <-errCh
+	return orchErr
 }
 
 func askUserForPrompt() (string, error) {

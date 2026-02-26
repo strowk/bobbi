@@ -217,6 +217,9 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 	case Solver:
 		switch requestType {
 		case "start_solver":
+			if additionalContext != "" {
+				return fmt.Sprintf("The technical contract in architecture/ has been updated. Here is what changed:\n\n%s\n\nReview the changes in the architecture, adjust your existing solution accordingly, rebuild the deliverable, place it in solution-deliverable/, and use the handoff_solution tool.", additionalContext)
+			}
 			return "Read the technical contract in architecture/ and implement the solution. Build the deliverable and place it in solution-deliverable/, then use the handoff_solution tool."
 		case "request_solution_change":
 			if itemCount > 1 {

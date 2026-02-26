@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -221,7 +222,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	requests, _, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err == nil && len(requests) == 0 {
 		o.log("No pending requests, bootstrapping with start_architect")
-		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", "orchestrator", o.userPrompt); err != nil {
+		from := "orchestrator"
+		if o.userPrompt != "" {
+			from = "user"
+		}
+		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", from, o.userPrompt); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 	}
@@ -693,7 +698,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 		return
 	default:
 	}
-	o.postCopy(agentType)
+	o.postCopy(agentType, batch)
 
 	// Mark ALL items in the batch as completed
 	o.markItemsCompleted(batch.items)
@@ -730,7 +735,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) {
 	}
 }
 
-func (o *Orchestrator) postCopy(agentType agent.AgentType) {
+func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
 	switch agentType {
 	case agent.Architect:
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
@@ -747,11 +752,53 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType) {
 				o.log("Error copying architecture to %s: %v", target, err)
 			}
 		}
+
+		// Determine if this was a bootstrap (start_architect with no context)
+		isBootstrap := batch.requestType == "start_architect" &&
+			batch.mergedContext == "" &&
+			batch.foldedChangeContext == ""
+
+		var solverContext string
+		if !isBootstrap {
+			// Capture architect's most recent commit message
+			commitMsg, err := gitCommandOutput(archDir, "log", "-1", "--format=%B")
+			if err != nil {
+				o.log("Error getting architect commit message: %v", err)
+			}
+
+			// Capture architect's most recent diff
+			archDiff, err := gitCommandOutput(archDir, "diff", "HEAD~1")
+			if err != nil {
+				o.log("Error getting architect diff: %v", err)
+			}
+
+			// Determine the originator and original context
+			from := "orchestrator"
+			originalContext := batch.mergedContext
+			if len(batch.items) > 0 {
+				from = batch.items[0].request.Request.From
+			}
+
+			solverContext = fmt.Sprintf("Change trigger (%s): %s\n\nArchitect's summary of changes:\n%s\n\nDiff of architecture changes:\n%s",
+				from, originalContext, strings.TrimSpace(commitMsg), archDiff)
+		}
+
 		// After architect, start solver
-		if _, err := queue.WriteRequest(o.queuesDir, "start_solver", "orchestrator", ""); err != nil {
+		if _, err := queue.WriteRequest(o.queuesDir, "start_solver", "orchestrator", solverContext); err != nil {
 			o.log("Error queuing start_solver: %v", err)
 		}
 	}
+}
+
+// gitCommandOutput runs a git command in the given directory and returns stdout.
+func gitCommandOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func (o *Orchestrator) handleHandoffSolution() {

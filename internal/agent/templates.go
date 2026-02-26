@@ -70,6 +70,7 @@ You are a test engineer. Your job is to verify that a solution meets the technic
 - Write clear, specific test cases
 - Provide actionable feedback when tests fail
 - Commit your test code to git as you work
+- When sending feedback via request_solution_change, you can only reference architecture files, NOT other files from your tree
 `
 
 	case Architect:
@@ -117,6 +118,7 @@ You are a code reviewer. Your job is to review solution code for quality and con
 - Focus on code quality and contract compliance — do not rewrite or reimplement the solution
 - Provide specific, actionable feedback
 - Prioritize correctness and maintainability issues
+- When sending feedback via request_solution_change, you can only reference architecture files, NOT other files from your tree
 `
 	}
 	return ""

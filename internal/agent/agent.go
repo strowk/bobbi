@@ -97,6 +97,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	// ANTHROPIC_API_KEY is intentionally excluded: the claude CLI uses its
 	// own credential store, and passing the parent key could cause child
 	// agents to bypass the CLI's auth flow or hit the wrong account.
+	cmd.Env = []string{}
 	for _, env := range os.Environ() {
 		key := strings.SplitN(env, "=", 2)[0]
 		switch key {

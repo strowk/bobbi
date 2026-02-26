@@ -476,7 +476,7 @@ func (o *Orchestrator) groupAndCoalesce(agentType agent.AgentType, items []workI
 			}
 			if hasContext {
 				// Fold change-request context into the start_* batch prompt
-				foldedContext := mergeContext(groups[t])
+				foldedContext := mergeContextAttributed(groups[t])
 				if len(batches) > 0 {
 					if batches[0].foldedChangeContext == "" {
 						batches[0].foldedChangeContext = foldedContext
@@ -530,12 +530,20 @@ func (o *Orchestrator) coalesceSameType(requestType string, items []workItem) wo
 }
 
 // mergeContext combines the additional_context from multiple work items into a single string
-// with attributed sections.
+// with attributed sections. For a single item, the raw context is returned (no attribution
+// header) since the prompt template already provides framing.
 func mergeContext(items []workItem) string {
 	if len(items) == 1 {
 		return items[0].request.Request.AdditionalContext
 	}
 
+	return mergeContextAttributed(items)
+}
+
+// mergeContextAttributed combines additional_context from work items into an attributed
+// string with "--- Feedback N (from <agent>) ---" headers on every item, even single ones.
+// Used when folding request_*_change context into start_* prompts.
+func mergeContextAttributed(items []workItem) string {
 	var parts []string
 	for i, item := range items {
 		ctx := item.request.Request.AdditionalContext
@@ -553,6 +561,37 @@ func mergeContext(items []workItem) string {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// handleBatchFailure applies retry/dead-letter logic for a failed batch. Items under
+// maxAgentRetries are un-dispatched for the next poll cycle; items that have exceeded
+// the limit are permanently marked as completed.
+func (o *Orchestrator) handleBatchFailure(batch workBatch, agentType agent.AgentType, reason string) {
+	o.retryMu.Lock()
+	var retryItems, deadItems []workItem
+	for _, item := range batch.items {
+		o.retryCount[item.requestPath]++
+		if o.retryCount[item.requestPath] >= maxAgentRetries {
+			deadItems = append(deadItems, item)
+			delete(o.retryCount, item.requestPath)
+		} else {
+			retryItems = append(retryItems, item)
+		}
+	}
+	o.retryMu.Unlock()
+
+	if len(retryItems) > 0 {
+		o.dispatchedMu.Lock()
+		for _, item := range retryItems {
+			delete(o.dispatched, item.requestPath)
+		}
+		o.dispatchedMu.Unlock()
+		o.log("Will retry %d item(s) for %s agent on next poll cycle (%s)", len(retryItems), agentType, reason)
+	}
+	if len(deadItems) > 0 {
+		o.log("Giving up on %d item(s) for %s agent after %d retries (%s)", len(deadItems), agentType, maxAgentRetries, reason)
+		o.markItemsCompleted(deadItems)
+	}
 }
 
 // markItemsCompleted moves all items' queue files to completed without processing.
@@ -605,31 +644,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 	// Pre-agent: copy relevant content (once per batch)
 	if err := o.preCopy(agentType); err != nil {
 		o.log("Pre-copy failed for %s agent: %v", agentType, err)
-		// Treat as agent failure: apply retry/dead-letter logic
-		o.retryMu.Lock()
-		var retryItems, deadItems []workItem
-		for _, item := range batch.items {
-			o.retryCount[item.requestPath]++
-			if o.retryCount[item.requestPath] >= maxAgentRetries {
-				deadItems = append(deadItems, item)
-				delete(o.retryCount, item.requestPath)
-			} else {
-				retryItems = append(retryItems, item)
-			}
-		}
-		o.retryMu.Unlock()
-		if len(retryItems) > 0 {
-			o.dispatchedMu.Lock()
-			for _, item := range retryItems {
-				delete(o.dispatched, item.requestPath)
-			}
-			o.dispatchedMu.Unlock()
-			o.log("Will retry %d item(s) for %s agent on next poll cycle (pre-copy failed)", len(retryItems), agentType)
-		}
-		if len(deadItems) > 0 {
-			o.log("Giving up on %d item(s) for %s agent after %d retries (pre-copy failed)", len(deadItems), agentType, maxAgentRetries)
-			o.markItemsCompleted(deadItems)
-		}
+		o.handleBatchFailure(batch, agentType, "pre-copy failed")
 		return
 	}
 
@@ -684,38 +699,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 
 	if agentErr != nil {
 		o.log("Agent %s error: %v", agentType, agentErr)
-
-		// On failure, check retry count for each item. If under max retries,
-		// un-dispatch so the next poll cycle re-dispatches the work. If over
-		// max retries, mark as completed to avoid infinite loops.
-		o.retryMu.Lock()
-		var retryItems, deadItems []workItem
-		for _, item := range batch.items {
-			o.retryCount[item.requestPath]++
-			if o.retryCount[item.requestPath] >= maxAgentRetries {
-				deadItems = append(deadItems, item)
-				delete(o.retryCount, item.requestPath) // clean up
-			} else {
-				retryItems = append(retryItems, item)
-			}
-		}
-		o.retryMu.Unlock()
-
-		// Un-dispatch retry-eligible items so next poll picks them up
-		if len(retryItems) > 0 {
-			o.dispatchedMu.Lock()
-			for _, item := range retryItems {
-				delete(o.dispatched, item.requestPath)
-			}
-			o.dispatchedMu.Unlock()
-			o.log("Will retry %d item(s) for %s agent on next poll cycle", len(retryItems), agentType)
-		}
-
-		// Permanently complete items that exceeded max retries
-		if len(deadItems) > 0 {
-			o.log("Giving up on %d item(s) for %s agent after %d retries", len(deadItems), agentType, maxAgentRetries)
-			o.markItemsCompleted(deadItems)
-		}
+		o.handleBatchFailure(batch, agentType, "agent failed")
 		return
 	}
 
@@ -810,10 +794,14 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
 				o.log("Error getting architect commit message: %v", err)
 			}
 
-			// Capture architect's most recent diff
+			// Capture architect's most recent diff (fall back to empty tree
+			// for single-commit repos where HEAD~1 doesn't exist).
 			archDiff, err := gitCommandOutput(archDir, "diff", "HEAD~1")
 			if err != nil {
-				o.log("Error getting architect diff: %v", err)
+				archDiff, err = gitCommandOutput(archDir, "diff", "4b825dc642b2f65e9749303d8217d414044dd1f4", "HEAD")
+				if err != nil {
+					o.log("Error getting architect diff: %v", err)
+				}
 			}
 
 			// Determine the originator and original context
@@ -867,7 +855,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 			o.log("Error copying deliverable to evaluator: %v", err)
 		}
 
-		// 3. Copy architecture to evaluator
+		// 2. Copy architecture to evaluator
 		dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		if err := os.RemoveAll(dstArch); err != nil {
 			o.log("Error removing old architecture in evaluator: %v", err)
@@ -884,7 +872,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	func() {
 		defer o.copyMu[agent.Reviewer].Unlock()
 
-		// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
+		// 3. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
 		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
 		if err := os.RemoveAll(dstSolution); err != nil {
 			o.log("Error removing old solution in reviewer: %v", err)

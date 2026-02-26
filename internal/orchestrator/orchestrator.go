@@ -103,6 +103,8 @@ func (o *Orchestrator) EnableFileLogging() error {
 
 // CloseLogFile closes the log file if open.
 func (o *Orchestrator) CloseLogFile() {
+	o.logFileMu.Lock()
+	defer o.logFileMu.Unlock()
 	if o.logFile != nil {
 		o.logFile.Close()
 		o.logFile = nil
@@ -173,11 +175,11 @@ func (o *Orchestrator) log(format string, args ...interface{}) {
 
 // writeLogLine writes a timestamped line to the log file.
 func (o *Orchestrator) writeLogLine(source, content string) {
+	o.logFileMu.Lock()
+	defer o.logFileMu.Unlock()
 	if o.logFile == nil {
 		return
 	}
-	o.logFileMu.Lock()
-	defer o.logFileMu.Unlock()
 	ts := time.Now().UTC().Format(time.RFC3339)
 	fmt.Fprintf(o.logFile, "%s [%s] %s\n", ts, source, content)
 }

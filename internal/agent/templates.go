@@ -146,7 +146,11 @@ func SettingsJSON(workDir string) string {
 			Deny: []string{},
 		},
 	}
-	data, _ := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		// This struct contains only string slices, so marshaling cannot fail.
+		panic(fmt.Sprintf("failed to marshal settings JSON: %v", err))
+	}
 	return string(data)
 }
 

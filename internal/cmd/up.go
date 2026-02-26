@@ -102,7 +102,10 @@ func Up(args []string) error {
 
 	if _, err := program.Run(); err != nil {
 		cancel()
-		<-errCh
+		orchErr := <-errCh
+		if orchErr != nil {
+			return fmt.Errorf("TUI error: %w (orchestrator also errored: %v)", err, orchErr)
+		}
 		return fmt.Errorf("TUI error: %w", err)
 	}
 

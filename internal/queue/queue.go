@@ -51,6 +51,12 @@ func WriteRequest(queuesDir string, reqType, from, additionalContext string) (st
 		if err != nil {
 			if os.IsExist(err) {
 				ts = ts.Add(time.Nanosecond)
+				// Re-marshal so the YAML timestamp matches the filename
+				req.Timestamp = ts
+				data, err = yaml.Marshal(&req)
+				if err != nil {
+					return "", fmt.Errorf("marshal request: %w", err)
+				}
 				continue
 			}
 			return "", fmt.Errorf("create request file: %w", err)

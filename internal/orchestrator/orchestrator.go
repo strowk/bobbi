@@ -60,6 +60,11 @@ type Orchestrator struct {
 	retryMu    sync.Mutex
 	retryCount map[string]int // requestPath -> retry count
 
+	// Per-agent copy mutexes serialize all directory copy operations
+	// targeting a given agent's repository (prevents races between
+	// handleHandoffSolution goroutines and worker preCopy/postCopy).
+	copyMu map[agent.AgentType]*sync.Mutex
+
 	// State for TUI rendering (protected by mu)
 	mu             sync.RWMutex
 	agentInfo      map[agent.AgentType]*AgentInfo
@@ -83,8 +88,10 @@ type workBatch struct {
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
 	info := make(map[agent.AgentType]*AgentInfo)
+	cmu := make(map[agent.AgentType]*sync.Mutex)
 	for _, at := range agent.AllTypes() {
 		info[at] = &AgentInfo{Status: "idle"}
+		cmu[at] = &sync.Mutex{}
 	}
 	return &Orchestrator{
 		baseDir:      baseDir,
@@ -97,6 +104,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 		retryCount:   make(map[string]int),
 		timeout:      timeout,
 		done:         make(chan struct{}),
+		copyMu:       cmu,
 		agentInfo:    info,
 	}
 }
@@ -595,7 +603,35 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 	}
 
 	// Pre-agent: copy relevant content (once per batch)
-	o.preCopy(agentType)
+	if err := o.preCopy(agentType); err != nil {
+		o.log("Pre-copy failed for %s agent: %v", agentType, err)
+		// Treat as agent failure: apply retry/dead-letter logic
+		o.retryMu.Lock()
+		var retryItems, deadItems []workItem
+		for _, item := range batch.items {
+			o.retryCount[item.requestPath]++
+			if o.retryCount[item.requestPath] >= maxAgentRetries {
+				deadItems = append(deadItems, item)
+				delete(o.retryCount, item.requestPath)
+			} else {
+				retryItems = append(retryItems, item)
+			}
+		}
+		o.retryMu.Unlock()
+		if len(retryItems) > 0 {
+			o.dispatchedMu.Lock()
+			for _, item := range retryItems {
+				delete(o.dispatched, item.requestPath)
+			}
+			o.dispatchedMu.Unlock()
+			o.log("Will retry %d item(s) for %s agent on next poll cycle (pre-copy failed)", len(retryItems), agentType)
+		}
+		if len(deadItems) > 0 {
+			o.log("Giving up on %d item(s) for %s agent after %d retries (pre-copy failed)", len(deadItems), agentType, maxAgentRetries)
+			o.markItemsCompleted(deadItems)
+		}
+		return
+	}
 
 	// Update agent state to running
 	o.mu.Lock()
@@ -704,35 +740,40 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 	o.markItemsCompleted(batch.items)
 }
 
-func (o *Orchestrator) preCopy(agentType agent.AgentType) {
+func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 
 	switch agentType {
 	case agent.Solver:
+		o.copyMu[agent.Solver].Lock()
+		defer o.copyMu[agent.Solver].Unlock()
+
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "architecture")
 		if err := os.RemoveAll(dst); err != nil {
-			o.log("Error removing old architecture in solver: %v", err)
+			return fmt.Errorf("remove old architecture in solver: %w", err)
 		}
 		if err := os.MkdirAll(dst, 0755); err != nil {
-			o.log("Error creating architecture dir in solver: %v", err)
-			return
+			return fmt.Errorf("create architecture dir in solver: %w", err)
 		}
 		if err := CopyArchitectureContract(archDir, dst); err != nil {
-			o.log("Error copying architecture to solver: %v", err)
+			return fmt.Errorf("copy architecture to solver: %w", err)
 		}
 	case agent.Evaluator:
+		o.copyMu[agent.Evaluator].Lock()
+		defer o.copyMu[agent.Evaluator].Unlock()
+
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		if err := os.RemoveAll(dst); err != nil {
-			o.log("Error removing old architecture in evaluator: %v", err)
+			return fmt.Errorf("remove old architecture in evaluator: %w", err)
 		}
 		if err := os.MkdirAll(dst, 0755); err != nil {
-			o.log("Error creating architecture dir in evaluator: %v", err)
-			return
+			return fmt.Errorf("create architecture dir in evaluator: %w", err)
 		}
 		if err := CopyArchitectureContract(archDir, dst); err != nil {
-			o.log("Error copying architecture to evaluator: %v", err)
+			return fmt.Errorf("copy architecture to evaluator: %w", err)
 		}
 	}
+	return nil
 }
 
 func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
@@ -740,17 +781,20 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
 	case agent.Architect:
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
+			o.copyMu[target].Lock()
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			if err := os.RemoveAll(dst); err != nil {
 				o.log("Error removing old architecture in %s: %v", target, err)
 			}
 			if err := os.MkdirAll(dst, 0755); err != nil {
 				o.log("Error creating architecture dir in %s: %v", target, err)
+				o.copyMu[target].Unlock()
 				continue
 			}
 			if err := CopyArchitectureContract(archDir, dst); err != nil {
 				o.log("Error copying architecture to %s: %v", target, err)
 			}
+			o.copyMu[target].Unlock()
 		}
 
 		// Determine if this was a bootstrap (start_architect with no context)
@@ -803,52 +847,65 @@ func gitCommandOutput(dir string, args ...string) (string, error) {
 
 func (o *Orchestrator) handleHandoffSolution() {
 	solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
-
-	// 1. Copy solution-deliverable to evaluator
-	srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
-	dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
-	if err := os.RemoveAll(dstDeliverable); err != nil {
-		o.log("Error removing old deliverable in evaluator: %v", err)
-	}
-	if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
-		o.log("Error creating deliverable dir in evaluator: %v", err)
-	} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
-		o.log("Error copying deliverable to evaluator: %v", err)
-	}
-
-	// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
-	dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
-	if err := os.RemoveAll(dstSolution); err != nil {
-		o.log("Error removing old solution in reviewer: %v", err)
-	}
-	if err := os.MkdirAll(dstSolution, 0755); err != nil {
-		o.log("Error creating solution dir in reviewer: %v", err)
-	} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
-		o.log("Error copying solution to reviewer: %v", err)
-	}
-
-	// 3. Copy architecture to evaluator
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
-	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
-	if err := os.RemoveAll(dstArch); err != nil {
-		o.log("Error removing old architecture in evaluator: %v", err)
-	}
-	if err := os.MkdirAll(dstArch, 0755); err != nil {
-		o.log("Error creating architecture dir in evaluator: %v", err)
-	} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
-		o.log("Error copying architecture to evaluator: %v", err)
-	}
 
-	// 4. Copy architecture to reviewer
-	dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
-	if err := os.RemoveAll(dstArchReview); err != nil {
-		o.log("Error removing old architecture in reviewer: %v", err)
-	}
-	if err := os.MkdirAll(dstArchReview, 0755); err != nil {
-		o.log("Error creating architecture dir in reviewer: %v", err)
-	} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
-		o.log("Error copying architecture to reviewer: %v", err)
-	}
+	// Copy evaluator targets under evaluator lock to prevent races with
+	// evaluator preCopy which operates on the same directories.
+	o.copyMu[agent.Evaluator].Lock()
+	func() {
+		defer o.copyMu[agent.Evaluator].Unlock()
+
+		// 1. Copy solution-deliverable to evaluator
+		srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
+		dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
+		if err := os.RemoveAll(dstDeliverable); err != nil {
+			o.log("Error removing old deliverable in evaluator: %v", err)
+		}
+		if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
+			o.log("Error creating deliverable dir in evaluator: %v", err)
+		} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
+			o.log("Error copying deliverable to evaluator: %v", err)
+		}
+
+		// 3. Copy architecture to evaluator
+		dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
+		if err := os.RemoveAll(dstArch); err != nil {
+			o.log("Error removing old architecture in evaluator: %v", err)
+		}
+		if err := os.MkdirAll(dstArch, 0755); err != nil {
+			o.log("Error creating architecture dir in evaluator: %v", err)
+		} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
+			o.log("Error copying architecture to evaluator: %v", err)
+		}
+	}()
+
+	// Copy reviewer targets under reviewer lock.
+	o.copyMu[agent.Reviewer].Lock()
+	func() {
+		defer o.copyMu[agent.Reviewer].Unlock()
+
+		// 2. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
+		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
+		if err := os.RemoveAll(dstSolution); err != nil {
+			o.log("Error removing old solution in reviewer: %v", err)
+		}
+		if err := os.MkdirAll(dstSolution, 0755); err != nil {
+			o.log("Error creating solution dir in reviewer: %v", err)
+		} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
+			o.log("Error copying solution to reviewer: %v", err)
+		}
+
+		// 4. Copy architecture to reviewer
+		dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
+		if err := os.RemoveAll(dstArchReview); err != nil {
+			o.log("Error removing old architecture in reviewer: %v", err)
+		}
+		if err := os.MkdirAll(dstArchReview, 0755); err != nil {
+			o.log("Error creating architecture dir in reviewer: %v", err)
+		} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
+			o.log("Error copying architecture to reviewer: %v", err)
+		}
+	}()
 
 	// 5. Enqueue start_evaluator
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {

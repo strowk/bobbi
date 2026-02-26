@@ -105,7 +105,7 @@ Each agent operates in its own git repository with strictly controlled visibilit
 | **Solver** | Architecture contract | Evaluator tests |
 | **Evaluator** | Architecture contract, solution deliverable | Solver source code |
 | **Architect** | Problem specification | Any other repository |
-| **Reviewer** | Solution code, test results | Architecture/specification |
+| **Reviewer** | Solution code, test results | |
 
 Agents are unaware of BOBBI's existence -- they receive only the context relevant to their role.
 

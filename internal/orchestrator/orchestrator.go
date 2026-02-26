@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,12 +58,17 @@ type Orchestrator struct {
 	startTime      time.Time
 }
 
-const maxRetries = 2 // allow up to 2 retries (3 total attempts)
-
 type workItem struct {
 	request     queue.Request
 	requestPath string
-	retryCount  int
+}
+
+// workBatch represents one or more coalesced work items of the same request type.
+type workBatch struct {
+	requestType   string
+	items         []workItem // ALL items (including dupes) for completion marking
+	mergedContext string     // Combined additional_context from all unique items
+	itemCount     int        // Number of items after deduplication
 }
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
@@ -352,48 +358,161 @@ func (o *Orchestrator) routeRequest(reqType string) agent.AgentType {
 
 func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch <-chan workItem) {
 	defer o.wg.Done()
-	for item := range ch {
+	for {
+		// Block until first item arrives (or channel closes)
+		item, ok := <-ch
+		if !ok {
+			return
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		o.log("Processing %s request (from: %s) for %s agent",
-			item.request.Request.Type, item.request.Request.From, agentType)
-		agentErr := o.processRequest(ctx, agentType, item)
-
-		select {
-		case <-ctx.Done():
-			o.log("Agent %s was interrupted, leaving request in queue", agentType)
-			return
-		default:
-		}
-
-		if agentErr != nil && item.retryCount < maxRetries {
-			item.retryCount++
-			o.log("Agent %s failed (attempt %d/%d), retrying: %v", agentType, item.retryCount, maxRetries+1, agentErr)
-			// Re-enqueue by sending back to the bidirectional channel (non-blocking)
-			if retryCh, ok := o.channels[agentType]; ok {
-				select {
-				case retryCh <- item:
-				default:
-					o.log("Channel buffer full for %s agent, cannot retry", agentType)
+		// Non-blocking drain of all currently-pending items
+		pending := []workItem{item}
+	drainLoop:
+		for {
+			select {
+			case extra, ok := <-ch:
+				if !ok {
+					break drainLoop
 				}
+				pending = append(pending, extra)
+			default:
+				break drainLoop
 			}
+		}
+
+		// Group by request type, apply coalescing rules
+		batches := o.groupAndCoalesce(agentType, pending)
+
+		// Process each batch in priority order
+		for _, batch := range batches {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			o.processBatch(ctx, agentType, batch)
+		}
+	}
+}
+
+// groupAndCoalesce groups work items by request type and applies coalescing rules.
+// start_* groups are processed first; request_*_change groups are dropped if a start_* is present.
+func (o *Orchestrator) groupAndCoalesce(agentType agent.AgentType, items []workItem) []workBatch {
+	// 1. Group by request type, preserving chronological order
+	groups := map[string][]workItem{}
+	var typeOrder []string
+	for _, item := range items {
+		t := item.request.Request.Type
+		if _, exists := groups[t]; !exists {
+			typeOrder = append(typeOrder, t)
+		}
+		groups[t] = append(groups[t], item)
+	}
+
+	// 2. Check for start_* vs request_*_change conflict
+	hasStart := false
+	for _, t := range typeOrder {
+		if strings.HasPrefix(t, "start_") {
+			hasStart = true
+			break
+		}
+	}
+
+	var batches []workBatch
+
+	// 3. Process start_* groups first
+	for _, t := range typeOrder {
+		if !strings.HasPrefix(t, "start_") {
 			continue
 		}
+		batch := o.coalesceSameType(t, groups[t])
+		batches = append(batches, batch)
+	}
 
-		if agentErr != nil {
-			o.log("Agent %s failed after %d attempts, marking request as completed: %v", agentType, item.retryCount+1, agentErr)
+	// 4. Process request_*_change groups (drop if start_* present)
+	for _, t := range typeOrder {
+		if strings.HasPrefix(t, "start_") {
+			continue
 		}
+		if hasStart {
+			// Drop stale change requests
+			o.log("Dropping %d stale %s request(s) (superseded by start_* request)",
+				len(groups[t]), t)
+			o.markItemsCompleted(groups[t])
+			continue
+		}
+		batch := o.coalesceSameType(t, groups[t])
+		batches = append(batches, batch)
+	}
 
+	return batches
+}
+
+// coalesceSameType merges items of the same request type, deduplicating by (from, additional_context).
+func (o *Orchestrator) coalesceSameType(requestType string, items []workItem) workBatch {
+	// Deduplicate by (from, additional_context)
+	seen := map[string]bool{}
+	var unique []workItem
+	for _, item := range items {
+		key := item.request.Request.From + "\x00" + item.request.Request.AdditionalContext
+		if seen[key] {
+			o.log("Deduplicated identical %s from %s", requestType, item.request.Request.From)
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, item)
+	}
+
+	// Merge context
+	merged := mergeContext(unique)
+
+	return workBatch{
+		requestType:   requestType,
+		items:         items, // Keep ALL items (including dupes) for completion marking
+		mergedContext: merged,
+		itemCount:     len(unique),
+	}
+}
+
+// mergeContext combines the additional_context from multiple work items into a single string
+// with attributed sections.
+func mergeContext(items []workItem) string {
+	if len(items) == 1 {
+		return items[0].request.Request.AdditionalContext
+	}
+
+	var parts []string
+	for i, item := range items {
+		ctx := item.request.Request.AdditionalContext
+		if ctx == "" {
+			continue
+		}
+		from := item.request.Request.From
+		parts = append(parts, fmt.Sprintf(
+			"--- Feedback %d (from %s) ---\n%s",
+			i+1, from, ctx,
+		))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// markItemsCompleted moves all items' queue files to completed without processing.
+func (o *Orchestrator) markItemsCompleted(items []workItem) {
+	for _, item := range items {
 		if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
 			o.log("Error marking completed: %v", err)
 		}
 		atomic.AddInt32(&o.completedCount, 1)
-
-		// Clean up dispatched entry to prevent unbounded map growth
 		o.dispatchedMu.Lock()
 		delete(o.dispatched, item.requestPath)
 		o.dispatchedMu.Unlock()
@@ -411,21 +530,26 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.AgentType, item workItem) error {
-	reqType := item.request.Request.Type
-	addCtx := item.request.Request.AdditionalContext
-
+// processBatch runs a single agent session for a coalesced batch of work items.
+func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentType, batch workBatch) {
 	select {
 	case <-ctx.Done():
 		o.log("Skipping %s agent (shutting down)", agentType)
-		return ctx.Err()
+		return
 	default:
 	}
 
-	repoDir := filepath.Join(o.baseDir, agent.RepoDir(agentType))
-	prompt := agent.BuildPrompt(agentType, reqType, addCtx)
+	if batch.itemCount > 1 {
+		o.log("Processing batch of %d %s requests for %s agent",
+			batch.itemCount, batch.requestType, agentType)
+	} else {
+		o.log("Processing %s request for %s agent", batch.requestType, agentType)
+	}
 
-	// Pre-agent: copy relevant content
+	repoDir := filepath.Join(o.baseDir, agent.RepoDir(agentType))
+	prompt := agent.BuildPrompt(agentType, batch.requestType, batch.mergedContext, batch.itemCount)
+
+	// Pre-agent: copy relevant content (once per batch)
 	o.preCopy(agentType)
 
 	// Update agent state to running
@@ -463,18 +587,14 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 	if o.logFile != nil {
 		agentLogWriter := &logWriter{orch: o, source: string(agentType)}
 		if opts.StdoutWriter != nil {
-			// Raw mode with logging: write to both stdout and log file
 			opts.StdoutWriter = io.MultiWriter(opts.StdoutWriter, agentLogWriter)
 		} else {
-			// TUI mode: write only to log file
 			opts.StdoutWriter = agentLogWriter
 		}
 	}
 
-	var agentErr error
 	if err := agent.StartAgent(ctx, agentType, repoDir, prompt, opts); err != nil {
 		o.log("Agent %s error: %v", agentType, err)
-		agentErr = err
 	}
 
 	// Update agent state to idle
@@ -485,14 +605,16 @@ func (o *Orchestrator) processRequest(ctx context.Context, agentType agent.Agent
 
 	o.log("Agent %s finished", agentType)
 
-	// Post-agent: copy outputs (skip if context was cancelled)
+	// Post-agent: copy outputs (once per batch, skip if cancelled)
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return
 	default:
 	}
 	o.postCopy(agentType)
-	return agentErr
+
+	// Mark ALL items in the batch as completed
+	o.markItemsCompleted(batch.items)
 }
 
 func (o *Orchestrator) preCopy(agentType agent.AgentType) {

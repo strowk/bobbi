@@ -194,8 +194,9 @@ func parseTokenUsage(line string, onTokens func(input, output int64)) {
 	}
 }
 
-// BuildPrompt returns the task prompt for an agent given a request type and context.
-func BuildPrompt(agentType AgentType, requestType string, additionalContext string) string {
+// BuildPrompt returns the task prompt for an agent given a request type, context, and item count.
+// When itemCount > 1, coalesced prompt variants are used for request_*_change types.
+func BuildPrompt(agentType AgentType, requestType string, additionalContext string, itemCount int) string {
 	switch agentType {
 	case Architect:
 		switch requestType {
@@ -205,6 +206,9 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 			}
 			return "Read SPECIFICATION.md and create/update the technical contract."
 		case "request_architecture_change":
+			if itemCount > 1 {
+				return fmt.Sprintf("Multiple changes to the technical contract have been requested (%d items):\n\n%s\n\nAddress ALL the feedback above and update the contract.", itemCount, additionalContext)
+			}
 			return fmt.Sprintf("A change to the technical contract has been requested: %s. Review and update the contract as needed.", additionalContext)
 		}
 	case Solver:
@@ -212,6 +216,9 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 		case "start_solver":
 			return "Read the technical contract in architecture/ and implement the solution. Build the deliverable and place it in solution-deliverable/, then use the handoff_solution tool."
 		case "request_solution_change":
+			if itemCount > 1 {
+				return fmt.Sprintf("Multiple changes to the solution have been requested (%d items):\n\n%s\n\nAddress ALL the feedback above and resubmit.", itemCount, additionalContext)
+			}
 			return fmt.Sprintf("A change to the solution has been requested: %s. Address the feedback and resubmit.", additionalContext)
 		}
 	case Evaluator:
@@ -219,6 +226,9 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 		case "start_evaluator":
 			return "A solution deliverable is available in solution-deliverable/. The technical contract is in architecture/. Write and run tests against the deliverable. Provide feedback or confirm the solution."
 		case "request_evaluation_change":
+			if itemCount > 1 {
+				return fmt.Sprintf("Multiple changes to the test suite have been requested (%d items):\n\n%s\n\nAddress ALL the feedback above and update the tests.", itemCount, additionalContext)
+			}
 			return fmt.Sprintf("A change to the test suite has been requested: %s. Update the tests accordingly.", additionalContext)
 		}
 	case Reviewer:

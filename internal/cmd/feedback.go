@@ -69,7 +69,10 @@ func readFeedbackInteractive(fbType string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("editor: %w", err)
 	}
-	fm := result.(feedbackModel)
+	fm, ok := result.(feedbackModel)
+	if !ok {
+		return "", fmt.Errorf("editor: unexpected model type %T", result)
+	}
 	if fm.cancelled {
 		return "", fmt.Errorf("cancelled")
 	}

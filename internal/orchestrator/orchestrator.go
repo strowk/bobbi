@@ -322,7 +322,7 @@ func (o *Orchestrator) poll() {
 			select {
 			case ch <- item:
 			default:
-				o.log("Channel buffer full for %s agent, dropping request %s", targetAgent, item.requestPath)
+				o.log("Channel buffer full for %s agent, deferring request %s to next poll", targetAgent, item.requestPath)
 				o.dispatchedMu.Lock()
 				delete(o.dispatched, item.requestPath)
 				o.dispatchedMu.Unlock()

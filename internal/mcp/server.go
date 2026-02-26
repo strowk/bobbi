@@ -27,6 +27,15 @@ func Serve(agentType agent.AgentType, queuesDir string, stdin io.Reader, stdout 
 		var req JSONRPCRequest
 		if err := json.Unmarshal(line, &req); err != nil {
 			fmt.Fprintf(os.Stderr, "[mcp] Failed to parse request: %v\n", err)
+			// JSON-RPC 2.0 spec: parse error must return error response with id: null
+			parseErrResp := JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      json.RawMessage("null"),
+				Error:   &RPCError{Code: -32700, Message: "Parse error"},
+			}
+			if encErr := encoder.Encode(parseErrResp); encErr != nil {
+				fmt.Fprintf(os.Stderr, "[mcp] Failed to write parse error response: %v\n", encErr)
+			}
 			continue
 		}
 

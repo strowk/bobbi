@@ -117,11 +117,12 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("agent %s start: %w", agentType, err)
 	}
 
-	done := make(chan struct{}, 2)
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
 
 	// Process stdout: parse JSONL for tokens, forward to writer
-	var scanErr error
 	go func() {
+		defer close(done)
 		scanner := bufio.NewScanner(stdoutPipe)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
@@ -134,34 +135,36 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			scanErr = err
 			if opts.LogFunc != nil {
 				opts.LogFunc("stdout scanner error for %s: %v", agentType, err)
 			}
+			errCh <- err
 		}
-		done <- struct{}{}
 	}()
 
 	// Process stderr
+	stderrDone := make(chan struct{})
 	go func() {
+		defer close(stderrDone)
 		if opts.StderrWriter != nil {
 			io.Copy(opts.StderrWriter, stderrPipe)
 		} else {
 			io.Copy(io.Discard, stderrPipe)
 		}
-		done <- struct{}{}
 	}()
 
 	err = cmd.Wait()
 	<-done
-	<-done
+	<-stderrDone
 	if err != nil {
 		return fmt.Errorf("agent %s failed: %w", agentType, err)
 	}
-	if scanErr != nil {
+	select {
+	case scanErr := <-errCh:
 		return fmt.Errorf("agent %s stdout scanner: %w", agentType, scanErr)
+	default:
+		return nil
 	}
-	return nil
 }
 
 // claudeEvent represents the relevant fields of a JSONL event from claude's stream-json output.

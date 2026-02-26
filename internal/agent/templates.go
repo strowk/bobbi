@@ -150,9 +150,9 @@ func SettingsJSON(workDir string) string {
 	return string(data)
 }
 
-func McpJSON(agentType AgentType, bobbBin string) string {
+func McpJSON(agentType AgentType, bobbiBin string) string {
 	// Normalize to forward slashes so the command path is valid JSON on Windows
-	bobbBin = strings.ReplaceAll(bobbBin, `\`, "/")
+	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 	return fmt.Sprintf(`{
   "mcpServers": {
     "bobbi": {
@@ -161,7 +161,7 @@ func McpJSON(agentType AgentType, bobbBin string) string {
       "args": ["mcp", "--agent", %q]
     }
   }
-}`, bobbBin, string(agentType))
+}`, bobbiBin, string(agentType))
 }
 
 func GitIgnore(agentType AgentType) string {

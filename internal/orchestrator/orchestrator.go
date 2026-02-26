@@ -93,7 +93,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 // EnableFileLogging opens .bobbi/log.txt for writing log output.
 func (o *Orchestrator) EnableFileLogging() error {
 	logPath := filepath.Join(o.baseDir, ".bobbi", "log.txt")
-	f, err := os.Create(logPath)
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("create log file: %w", err)
 	}

@@ -98,7 +98,7 @@ func (m TUIModel) View() string {
 	if w < 60 {
 		w = 60
 	}
-	// Content width inside a bordered+padded box: 2 for border, 2 for padding(0,1).
+	// Content width inside a bordered+padded box: subtract 2 for border, 2 for padding(0,1).
 	inner := w - 4
 
 	elapsed := time.Since(m.orch.GetStartTime())
@@ -106,11 +106,13 @@ func (m TUIModel) View() string {
 	completedCount := m.orch.GetCompletedCount()
 	totalIn, totalOut := m.orch.GetTotalTokens()
 
+	// In lipgloss v1, Width is the total rendered width including border+padding.
+	// Border(rounded)=2 + Padding(0,1)=2 = 4, so Width(w) gives content area = inner.
 	boxStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(colorPurple).
 		Padding(0, 1).
-		Width(inner)
+		Width(w)
 
 	// ── Header ───────────────────────────────────────────
 	title := lipgloss.NewStyle().Bold(true).Foreground(colorPurple).
@@ -182,7 +184,7 @@ func (m TUIModel) View() string {
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(colorGray).
 			Padding(0, 1).
-			Width(inner).
+			Width(w).
 			Render(strings.Join(lines, "\n"))
 	}
 

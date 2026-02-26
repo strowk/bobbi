@@ -84,8 +84,10 @@ func Serve(agentType agent.AgentType, queuesDir string, stdin io.Reader, stdout 
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result:  result,
 			Error:   rpcErr,
+		}
+		if rpcErr == nil {
+			resp.Result = &result
 		}
 
 		if err := encoder.Encode(resp); err != nil {

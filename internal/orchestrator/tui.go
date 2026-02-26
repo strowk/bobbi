@@ -8,6 +8,7 @@ import (
 	"bobbi/internal/agent"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // tickMsg triggers periodic TUI refresh.
@@ -15,6 +16,17 @@ type tickMsg time.Time
 
 // orchestratorDoneMsg signals the TUI that the orchestrator has finished.
 type orchestratorDoneMsg struct{}
+
+// Color palette.
+var (
+	colorPurple    = lipgloss.Color("#7C3AED")
+	colorCyan      = lipgloss.Color("#06B6D4")
+	colorGreen     = lipgloss.Color("#10B981")
+	colorAmber     = lipgloss.Color("#F59E0B")
+	colorGray      = lipgloss.Color("#6B7280")
+	colorDimGray   = lipgloss.Color("#9CA3AF")
+	colorLightGray = lipgloss.Color("#D1D5DB")
+)
 
 // TUIModel is the BubbleTea model for the BOBBI terminal UI.
 type TUIModel struct {
@@ -61,7 +73,6 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		// Check if orchestrator is done
 		select {
 		case <-m.orch.Done():
 			m.quitting = true
@@ -83,77 +94,127 @@ func (m TUIModel) View() string {
 		return ""
 	}
 
-	var b strings.Builder
 	w := m.width
 	if w < 60 {
 		w = 60
 	}
+	// Content width inside a bordered+padded box: 2 for border, 2 for padding(0,1).
+	inner := w - 4
 
 	elapsed := time.Since(m.orch.GetStartTime())
 	queueDepth := m.orch.GetQueueDepth()
 	completedCount := m.orch.GetCompletedCount()
 	totalIn, totalOut := m.orch.GetTotalTokens()
 
-	// Header
-	header := fmt.Sprintf(" BOBBI Orchestrator")
-	headerRight := fmt.Sprintf("Elapsed: %s  Queue: %d ", formatDuration(elapsed), queueDepth)
-	padding := w - 2 - len(header) - len(headerRight)
-	if padding < 1 {
-		padding = 1
-	}
-	b.WriteString("┌" + strings.Repeat("─", w-2) + "┐\n")
-	b.WriteString("│" + header + strings.Repeat(" ", padding) + headerRight + "│\n")
-	b.WriteString("├" + strings.Repeat("─", 11) + "┬" + strings.Repeat("─", 10) + "┬" + strings.Repeat("─", w-25) + "┤\n")
+	boxStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(colorPurple).
+		Padding(0, 1).
+		Width(inner)
 
-	// Column headers
-	b.WriteString(fmt.Sprintf("│ %-9s │ %-8s │ %-*s │\n", "Agent", "Status", w-27, "Tokens (in / out)"))
-	b.WriteString("├" + strings.Repeat("─", 11) + "┼" + strings.Repeat("─", 10) + "┼" + strings.Repeat("─", w-25) + "┤\n")
+	// ── Header ───────────────────────────────────────────
+	title := lipgloss.NewStyle().Bold(true).Foreground(colorPurple).
+		Render("BOBBI Orchestrator")
+	meta := lipgloss.NewStyle().Foreground(colorDimGray).
+		Render(fmt.Sprintf("%s   Queue: %d", formatDuration(elapsed), queueDepth))
+	header := boxStyle.Render(
+		spaced(title, meta, inner),
+	)
 
-	// Agent rows
+	// ── Agent table ──────────────────────────────────────
+	colHdr := lipgloss.NewStyle().Bold(true).Foreground(colorLightGray).
+		Render(fmt.Sprintf("  %-12s %-12s %s", "Agent", "Status", "Tokens (in / out)"))
+	sep := lipgloss.NewStyle().Foreground(colorGray).
+		Render("  " + strings.Repeat("─", inner))
+
 	agentOrder := []agent.AgentType{agent.Architect, agent.Solver, agent.Evaluator, agent.Reviewer}
-	var runningPrompts []string
+	rows := make([]string, 0, len(agentOrder))
+	var prompts []string
 
 	for _, at := range agentOrder {
-		info := m.orch.GetAgentInfo(at)
-		status := info.Status
-		tokens := "— / —"
-		if info.HasRun || info.InputTokens > 0 || info.OutputTokens > 0 {
-			tokens = fmt.Sprintf("%s / %s", formatNumber(info.InputTokens), formatNumber(info.OutputTokens))
-		}
-		b.WriteString(fmt.Sprintf("│ %-9s │ %-8s │ %-*s │\n", at, status, w-27, tokens))
+		ai := m.orch.GetAgentInfo(at)
 
-		if info.Status == "running" && info.Prompt != "" {
-			summary := truncatePrompt(info.Prompt, w-6)
-			runningPrompts = append(runningPrompts, fmt.Sprintf("%s: %s", at, summary))
+		name := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).
+			Render(fmt.Sprintf("%-12s", at))
+
+		var status string
+		switch ai.Status {
+		case "running":
+			status = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).
+				Render(fmt.Sprintf("%-12s", "● running"))
+		case "queued":
+			status = lipgloss.NewStyle().Foreground(colorAmber).
+				Render(fmt.Sprintf("%-12s", "◌ queued"))
+		default:
+			status = lipgloss.NewStyle().Foreground(colorGray).
+				Render(fmt.Sprintf("%-12s", "○ idle"))
+		}
+
+		tok := lipgloss.NewStyle().Foreground(colorGray).Render("— / —")
+		if ai.HasRun || ai.InputTokens > 0 || ai.OutputTokens > 0 {
+			tok = lipgloss.NewStyle().Foreground(colorDimGray).
+				Render(fmt.Sprintf("%s / %s",
+					formatNumber(ai.InputTokens), formatNumber(ai.OutputTokens)))
+		}
+
+		rows = append(rows, fmt.Sprintf("  %s %s %s", name, status, tok))
+
+		if ai.Status == "running" && ai.Prompt != "" {
+			summary := truncatePrompt(ai.Prompt, inner-len(string(at))-4)
+			prompts = append(prompts, fmt.Sprintf("%s: %s", at, summary))
 		}
 	}
 
-	b.WriteString("├" + strings.Repeat("─", 11) + "┴" + strings.Repeat("─", 10) + "┴" + strings.Repeat("─", w-25) + "┤\n")
+	table := lipgloss.JoinVertical(lipgloss.Left,
+		append([]string{colHdr, sep}, rows...)...)
 
-	// Prompt summary section
-	if len(runningPrompts) > 0 {
-		for _, p := range runningPrompts {
-			line := " " + p
-			if len(line) > w-4 {
-				line = line[:w-5] + "..."
+	// ── Running prompts ──────────────────────────────────
+	var promptBox string
+	if len(prompts) > 0 {
+		lines := make([]string, len(prompts))
+		for i, p := range prompts {
+			if len(p) > inner-2 {
+				p = p[:inner-5] + "..."
 			}
-			b.WriteString(fmt.Sprintf("│ %-*s │\n", w-4, line))
+			lines[i] = lipgloss.NewStyle().Foreground(colorDimGray).Italic(true).Render(p)
 		}
-	} else {
-		b.WriteString(fmt.Sprintf("│ %-*s │\n", w-4, " (no agents running)"))
+		promptBox = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colorGray).
+			Padding(0, 1).
+			Width(inner).
+			Render(strings.Join(lines, "\n"))
 	}
-	b.WriteString("├" + strings.Repeat("─", w-2) + "┤\n")
 
-	// Footer
-	footer := fmt.Sprintf(" Completed: %d │ Total tokens: %s in / %s out ",
-		completedCount, formatNumber(totalIn), formatNumber(totalOut))
-	if len(footer) > w-4 {
-		footer = footer[:w-5] + "..."
+	// ── Footer ───────────────────────────────────────────
+	fLeft := lipgloss.NewStyle().Foreground(colorGreen).
+		Render(fmt.Sprintf("Completed: %d", completedCount))
+	fRight := lipgloss.NewStyle().Foreground(colorDimGray).
+		Render(fmt.Sprintf("Tokens: %s in / %s out",
+			formatNumber(totalIn), formatNumber(totalOut)))
+	footer := boxStyle.Render(spaced(fLeft, fRight, inner))
+
+	// ── Help ─────────────────────────────────────────────
+	help := lipgloss.NewStyle().Foreground(colorGray).Padding(0, 2).
+		Render("Press q or ctrl+c to quit")
+
+	// ── Compose ──────────────────────────────────────────
+	parts := []string{header, "", table}
+	if promptBox != "" {
+		parts = append(parts, "", promptBox)
 	}
-	b.WriteString(fmt.Sprintf("│ %-*s │\n", w-4, footer))
-	b.WriteString("└" + strings.Repeat("─", w-2) + "┘\n")
+	parts = append(parts, "", footer, help, "")
 
-	return b.String()
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// spaced joins left and right strings with spaces to fill width.
+func spaced(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // formatDuration formats a duration as MM:SS.
@@ -170,13 +231,11 @@ func formatNumber(n int64) string {
 		return "0"
 	}
 	s := fmt.Sprintf("%d", n)
-	// Handle negative prefix separately
 	prefix := ""
 	if s[0] == '-' {
 		prefix = "-"
 		s = s[1:]
 	}
-	// Insert commas
 	var result []byte
 	for i, c := range s {
 		if i > 0 && (len(s)-i)%3 == 0 {
@@ -189,7 +248,6 @@ func formatNumber(n int64) string {
 
 // truncatePrompt truncates a prompt to maxLen characters.
 func truncatePrompt(prompt string, maxLen int) string {
-	// Replace newlines with spaces for display
 	prompt = strings.ReplaceAll(prompt, "\n", " ")
 	if len(prompt) > maxLen {
 		if maxLen > 3 {

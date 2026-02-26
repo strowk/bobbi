@@ -65,10 +65,11 @@ type workItem struct {
 
 // workBatch represents one or more coalesced work items of the same request type.
 type workBatch struct {
-	requestType   string
-	items         []workItem // ALL items (including dupes) for completion marking
-	mergedContext string     // Combined additional_context from all unique items
-	itemCount     int        // Number of items after deduplication
+	requestType        string
+	items              []workItem // ALL items (including dupes) for completion marking
+	mergedContext      string     // Combined additional_context from all unique items
+	itemCount          int        // Number of items after deduplication
+	foldedChangeContext string    // Context from request_*_change items folded into a start_* batch
 }
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
@@ -93,7 +94,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 // EnableFileLogging opens .bobbi/log.txt for writing log output.
 func (o *Orchestrator) EnableFileLogging() error {
 	logPath := filepath.Join(o.baseDir, ".bobbi", "log.txt")
-	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("create log file: %w", err)
 	}
@@ -437,16 +438,40 @@ func (o *Orchestrator) groupAndCoalesce(agentType agent.AgentType, items []workI
 		batches = append(batches, batch)
 	}
 
-	// 4. Process request_*_change groups (drop if start_* present)
+	// 4. Process request_*_change groups
 	for _, t := range typeOrder {
 		if strings.HasPrefix(t, "start_") {
 			continue
 		}
 		if hasStart {
-			// Drop stale change requests
-			o.log("Dropping %d stale %s request(s) (superseded by start_* request)",
-				len(groups[t]), t)
-			o.markItemsCompleted(groups[t])
+			// Check if any change request has non-empty additional_context
+			hasContext := false
+			for _, item := range groups[t] {
+				if item.request.Request.AdditionalContext != "" {
+					hasContext = true
+					break
+				}
+			}
+			if hasContext {
+				// Fold change-request context into the start_* batch prompt
+				foldedContext := mergeContext(groups[t])
+				if len(batches) > 0 {
+					if batches[0].foldedChangeContext == "" {
+						batches[0].foldedChangeContext = foldedContext
+					} else {
+						batches[0].foldedChangeContext += "\n\n" + foldedContext
+					}
+					// Add items to the start batch for completion tracking
+					batches[0].items = append(batches[0].items, groups[t]...)
+				}
+				o.log("Folding %d %s request(s) with context into start_* session",
+					len(groups[t]), t)
+			} else {
+				// Drop stale change requests with no context
+				o.log("Dropping %d stale %s request(s) (superseded by start_* request, no context)",
+					len(groups[t]), t)
+				o.markItemsCompleted(groups[t])
+			}
 			continue
 		}
 		batch := o.coalesceSameType(t, groups[t])
@@ -550,6 +575,10 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 
 	repoDir := filepath.Join(o.baseDir, agent.RepoDir(agentType))
 	prompt := agent.BuildPrompt(agentType, batch.requestType, batch.mergedContext, batch.itemCount)
+	// Append folded change-request context if present (start_* with superseded request_*_change)
+	if batch.foldedChangeContext != "" {
+		prompt += "\n\nAdditionally, the following feedback was received from other agents:\n\n" + batch.foldedChangeContext
+	}
 
 	// Pre-agent: copy relevant content (once per batch)
 	o.preCopy(agentType)
@@ -700,11 +729,23 @@ func (o *Orchestrator) handleHandoffSolution() {
 		o.log("Error copying solution to reviewer: %v", err)
 	}
 
-	// 3. Enqueue start_evaluator (architecture is copied by preCopy when evaluator starts)
+	// 3. Copy architecture to evaluator
+	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
+	dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
+	if err := os.RemoveAll(dstArch); err != nil {
+		o.log("Error removing old architecture in evaluator: %v", err)
+	}
+	if err := os.MkdirAll(dstArch, 0755); err != nil {
+		o.log("Error creating architecture dir in evaluator: %v", err)
+	} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
+		o.log("Error copying architecture to evaluator: %v", err)
+	}
+
+	// 4. Enqueue start_evaluator
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_evaluator: %v", err)
 	}
-	// 4. Enqueue start_reviewer
+	// 5. Enqueue start_reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_reviewer: %v", err)
 	}

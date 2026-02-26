@@ -97,7 +97,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	for _, env := range os.Environ() {
 		key := strings.SplitN(env, "=", 2)[0]
 		switch key {
-		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT":
+		case "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "ANTHROPIC_API_KEY":
 			continue
 		default:
 			cmd.Env = append(cmd.Env, env)

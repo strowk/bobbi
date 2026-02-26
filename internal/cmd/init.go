@@ -101,6 +101,9 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobbiBin string) e
 			}
 		}
 	case agent.Reviewer:
+		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
+			return fmt.Errorf("create reviewer architecture dir: %w", err)
+		}
 		if err := os.MkdirAll(filepath.Join(repoDir, "solution"), 0755); err != nil {
 			return fmt.Errorf("create reviewer solution dir: %w", err)
 		}

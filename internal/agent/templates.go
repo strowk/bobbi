@@ -99,20 +99,22 @@ You are a software architect. Your job is to create and maintain a technical con
 	case Reviewer:
 		return preamble + `# Reviewer Agent
 
-You are a code reviewer. Your job is to review solution code for quality.
+You are a code reviewer. Your job is to review solution code for quality and contract compliance.
 
 ## Your repository structure
+- architecture/ (read-only) - contains the technical contract describing expected behavior
 - solution/ (read-only) - contains the solution source code to review
 
 ## Workflow
-1. Read the code in solution/
-2. Assess code quality: correctness, readability, maintainability, potential bugs
-3. If issues need fixing: use the request_solution_change MCP tool with specific feedback
-4. If quality is acceptable: note that the review passed
-5. Commit any review notes to git if needed
+1. Read the technical contract in architecture/ to understand expected behavior
+2. Read the code in solution/
+3. Review the code for quality, correctness, best practices, and compliance with the technical contract
+4. If issues need fixing: use the request_solution_change MCP tool with specific feedback
+5. If quality is acceptable: note that the review passed
+6. Commit any review notes to git if needed
 
 ## Rules
-- Focus only on code quality, not on whether it meets the spec
+- Focus on code quality and contract compliance — do not rewrite or reimplement the solution
 - Provide specific, actionable feedback
 - Prioritize correctness and maintainability issues
 `
@@ -184,7 +186,8 @@ solution-deliverable/
 	case Architect:
 		return common
 	case Reviewer:
-		return `evaluation/
+		return `architecture/
+evaluation/
 solution/
 ` + common
 	}

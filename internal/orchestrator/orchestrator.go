@@ -741,11 +741,22 @@ func (o *Orchestrator) handleHandoffSolution() {
 		o.log("Error copying architecture to evaluator: %v", err)
 	}
 
-	// 4. Enqueue start_evaluator
+	// 4. Copy architecture to reviewer
+	dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
+	if err := os.RemoveAll(dstArchReview); err != nil {
+		o.log("Error removing old architecture in reviewer: %v", err)
+	}
+	if err := os.MkdirAll(dstArchReview, 0755); err != nil {
+		o.log("Error creating architecture dir in reviewer: %v", err)
+	} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
+		o.log("Error copying architecture to reviewer: %v", err)
+	}
+
+	// 5. Enqueue start_evaluator
 	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_evaluator: %v", err)
 	}
-	// 5. Enqueue start_reviewer
+	// 6. Enqueue start_reviewer
 	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
 		o.log("Error queuing start_reviewer: %v", err)
 	}

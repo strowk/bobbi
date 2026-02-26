@@ -15,7 +15,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 		return []Tool{
 			{
 				Name:        "handoff_solution",
-				Description: "Submit your solution for evaluation. Call this after you've built your solution and placed the deliverable in solution-deliverable/.",
+				Description: "Submit the solution for evaluation and review.",
 				InputSchema: InputSchema{
 					Type:       "object",
 					Properties: map[string]Property{},
@@ -23,7 +23,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 			},
 			{
 				Name:        "request_architecture_change",
-				Description: "Request a change to the technical architecture/contract.",
+				Description: "Request a change to the technical contract.",
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -37,7 +37,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 		return []Tool{
 			{
 				Name:        "request_architecture_change",
-				Description: "Request a change to the technical architecture/contract.",
+				Description: "Request a change to the technical contract.",
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -48,7 +48,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 			},
 			{
 				Name:        "request_solution_change",
-				Description: "Request the solver to make changes to the solution.",
+				Description: "Request a change to the solution.",
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -59,7 +59,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 			},
 			{
 				Name:        "confirm_solution",
-				Description: "Confirm that the solution passes all tests and meets the specification.",
+				Description: "Accept the solution as meeting the contract.",
 				InputSchema: InputSchema{
 					Type:       "object",
 					Properties: map[string]Property{},
@@ -70,7 +70,7 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 		return []Tool{
 			{
 				Name:        "request_solution_change",
-				Description: "Request the solver to make changes to the solution based on code review feedback.",
+				Description: "Request a change to the solution.",
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]Property{
@@ -94,7 +94,7 @@ func HandlersForAgent(agentType agent.AgentType, queuesDir string) map[string]To
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue handoff: %v", err))
 			}
-			return TextResult("Solution handed off for evaluation. The evaluator will run tests against your deliverable.")
+			return TextResult("Solution handed off for evaluation and review.")
 		}
 		handlers["request_architecture_change"] = makeArchChangeHandler(queuesDir, "solver")
 
@@ -109,7 +109,7 @@ func HandlersForAgent(agentType agent.AgentType, queuesDir string) map[string]To
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
 			}
-			return TextResult("Solution change requested. The solver will be notified.")
+			return TextResult("Solution change requested.")
 		}
 		handlers["confirm_solution"] = func(args map[string]interface{}) ToolResult {
 			_, err := queue.WriteRequest(queuesDir, "confirm_solution", "evaluator", "")
@@ -129,7 +129,7 @@ func HandlersForAgent(agentType agent.AgentType, queuesDir string) map[string]To
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
 			}
-			return TextResult("Solution change requested based on code review. The solver will be notified.")
+			return TextResult("Solution change requested.")
 		}
 	}
 
@@ -146,7 +146,7 @@ func makeArchChangeHandler(queuesDir, from string) ToolHandler {
 		if err != nil {
 			return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
 		}
-		return TextResult("Architecture change requested. The architect will be notified.")
+		return TextResult("Architecture change requested.")
 	}
 }
 

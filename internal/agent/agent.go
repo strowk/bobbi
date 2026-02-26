@@ -237,7 +237,7 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 	case Reviewer:
 		switch requestType {
 		case "start_reviewer":
-			return "Solution code is available in solution/. Review it for code quality and provide feedback."
+			return "Solution code is available in solution/. The technical contract is in architecture/. Review the code for quality and contract compliance, and provide feedback."
 		}
 	}
 	return fmt.Sprintf("Perform the task: %s\nContext: %s", requestType, additionalContext)

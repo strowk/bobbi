@@ -118,6 +118,11 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return fmt.Errorf("set file mode: %w", err)
 	}
 
+	// On Windows, os.Rename fails if dst already exists. Remove it first.
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		os.Remove(tmpPath)
+		return fmt.Errorf("remove existing dst: %w", err)
+	}
 	if err := os.Rename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)

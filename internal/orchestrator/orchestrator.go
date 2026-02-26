@@ -15,6 +15,10 @@ import (
 	"bobbi/internal/queue"
 )
 
+// maxAgentRetries is the maximum number of times a failed work item will be
+// retried before being permanently marked as completed (to avoid infinite loops).
+const maxAgentRetries = 3
+
 // AgentInfo holds the current state of a single agent type for display.
 type AgentInfo struct {
 	Status            string // "idle", "running", "queued"
@@ -51,6 +55,10 @@ type Orchestrator struct {
 	logFile   *os.File
 	logFileMu sync.Mutex
 
+	// Retry tracking for failed agent starts (protected by retryMu)
+	retryMu    sync.Mutex
+	retryCount map[string]int // requestPath -> retry count
+
 	// State for TUI rendering (protected by mu)
 	mu             sync.RWMutex
 	agentInfo      map[agent.AgentType]*AgentInfo
@@ -85,6 +93,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 		rawMode:      rawMode,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
+		retryCount:   make(map[string]int),
 		timeout:      timeout,
 		done:         make(chan struct{}),
 		agentInfo:    info,
@@ -624,9 +633,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 		}
 	}
 
-	if err := agent.StartAgent(ctx, agentType, repoDir, prompt, opts); err != nil {
-		o.log("Agent %s error: %v", agentType, err)
-	}
+	agentErr := agent.StartAgent(ctx, agentType, repoDir, prompt, opts)
 
 	// Update agent state to idle
 	o.mu.Lock()
@@ -634,7 +641,51 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 	info.HasRun = true
 	o.mu.Unlock()
 
+	if agentErr != nil {
+		o.log("Agent %s error: %v", agentType, agentErr)
+
+		// On failure, check retry count for each item. If under max retries,
+		// un-dispatch so the next poll cycle re-dispatches the work. If over
+		// max retries, mark as completed to avoid infinite loops.
+		o.retryMu.Lock()
+		var retryItems, deadItems []workItem
+		for _, item := range batch.items {
+			o.retryCount[item.requestPath]++
+			if o.retryCount[item.requestPath] >= maxAgentRetries {
+				deadItems = append(deadItems, item)
+				delete(o.retryCount, item.requestPath) // clean up
+			} else {
+				retryItems = append(retryItems, item)
+			}
+		}
+		o.retryMu.Unlock()
+
+		// Un-dispatch retry-eligible items so next poll picks them up
+		if len(retryItems) > 0 {
+			o.dispatchedMu.Lock()
+			for _, item := range retryItems {
+				delete(o.dispatched, item.requestPath)
+			}
+			o.dispatchedMu.Unlock()
+			o.log("Will retry %d item(s) for %s agent on next poll cycle", len(retryItems), agentType)
+		}
+
+		// Permanently complete items that exceeded max retries
+		if len(deadItems) > 0 {
+			o.log("Giving up on %d item(s) for %s agent after %d retries", len(deadItems), agentType, maxAgentRetries)
+			o.markItemsCompleted(deadItems)
+		}
+		return
+	}
+
 	o.log("Agent %s finished", agentType)
+
+	// Clear retry counts for successfully completed items
+	o.retryMu.Lock()
+	for _, item := range batch.items {
+		delete(o.retryCount, item.requestPath)
+	}
+	o.retryMu.Unlock()
 
 	// Post-agent: copy outputs (once per batch, skip if cancelled)
 	select {

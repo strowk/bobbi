@@ -117,10 +117,9 @@ func initAgentRepo(repoDir string, agentType agent.AgentType, bobbiBin string) e
 
 func gitInit(dir string) error {
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "add", "-A"},
 		{"git", "commit", "-m", "Initial commit"},
-		{"git", "branch", "-m", "main"},
 	}
 	for _, args := range cmds {
 		cmd := exec.Command(args[0], args[1:]...)

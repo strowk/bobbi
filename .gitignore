@@ -1,7 +1,8 @@
 bobbi-test*
 .claude/settings.local.json
 architecture/
-solution-deliverable/
+solution-deliverable/*
+!solution-deliverable/.gitkeep
 .mcp.json
 .claude/settings.json
 bobbi.exe

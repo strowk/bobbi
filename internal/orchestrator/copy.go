@@ -22,10 +22,10 @@ func CopyArchitectureContract(src, dst string) error {
 }
 
 // CopySolutionSource copies src directory contents to dst,
-// excluding .git/, architecture/, and solution-deliverable/ directories
-// as specified by the contract for handoff_solution.
+// excluding .git/, architecture/, solution-deliverable/, and bobbi config
+// files (.claude/, .mcp.json, .gitignore) so only actual solution code is copied.
 func CopySolutionSource(src, dst string) error {
-	return copyDirExcluding(src, dst, []string{"architecture", "solution-deliverable"})
+	return copyDirExcluding(src, dst, []string{"architecture", "solution-deliverable", ".claude", ".mcp.json", ".gitignore"})
 }
 
 func copyDirExcluding(src, dst string, excludeNames []string) error {

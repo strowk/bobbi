@@ -199,6 +199,7 @@ func (o *Orchestrator) writeLogLine(source, content string) {
 	if o.logFile == nil {
 		return
 	}
+	content = strings.TrimRight(content, "\n")
 	ts := time.Now().UTC().Format(time.RFC3339)
 	fmt.Fprintf(o.logFile, "%s [%s] %s\n", ts, source, content)
 }

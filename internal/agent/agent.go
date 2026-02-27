@@ -45,6 +45,8 @@ type StartOptions struct {
 	// input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 	// output = output_tokens
 	OnTokens func(input, output int64)
+	// OnText is called with extracted text content from assistant and result JSONL events.
+	OnText func(text string)
 	// StdoutWriter receives all stdout lines. If nil, stdout is discarded.
 	StdoutWriter io.Writer
 	// StderrWriter receives all stderr lines. If nil, stderr is discarded.
@@ -134,6 +136,9 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 			if opts.OnTokens != nil {
 				parseTokenUsage(line, opts.OnTokens)
 			}
+			if opts.OnText != nil {
+				parseTextContent(line, opts.OnText)
+			}
 			if opts.StdoutWriter != nil {
 				fmt.Fprintln(opts.StdoutWriter, line)
 			}
@@ -181,7 +186,17 @@ type claudeEvent struct {
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 			OutputTokens             int64 `json:"output_tokens"`
 		} `json:"usage"`
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+	Result *struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"result"`
+}
+
+// contentBlock represents a single content block from message.content or result.content arrays.
+type contentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // parseTokenUsage extracts token usage from a JSONL line and calls onTokens if found.
@@ -198,6 +213,49 @@ func parseTokenUsage(line string, onTokens func(input, output int64)) {
 	output := u.OutputTokens
 	if input > 0 || output > 0 {
 		onTokens(input, output)
+	}
+}
+
+// extractTextFromContent extracts text from a JSON content array (message.content or result.content).
+func extractTextFromContent(raw json.RawMessage) string {
+	if raw == nil {
+		return ""
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			texts = append(texts, b.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+// parseTextContent extracts text content from a JSONL line and calls onText if found.
+// It handles "assistant" events (message.content) and "result" events (result.content).
+func parseTextContent(line string, onText func(string)) {
+	var event claudeEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
+	}
+	var text string
+	switch event.Type {
+	case "assistant":
+		if event.Message != nil {
+			text = extractTextFromContent(event.Message.Content)
+		}
+	case "result":
+		if event.Result != nil {
+			text = extractTextFromContent(event.Result.Content)
+		}
+	default:
+		return
+	}
+	if text != "" {
+		onText(text)
 	}
 }
 

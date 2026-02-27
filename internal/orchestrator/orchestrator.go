@@ -24,11 +24,15 @@ const maxAgentRetries = 3
 type AgentInfo struct {
 	Status            string // "idle", "running", "queued"
 	Prompt            string
-	InputTokens       int64 // tokens for the current/latest run
-	OutputTokens      int64 // tokens for the current/latest run
-	TotalInputTokens  int64 // cumulative tokens across all runs
-	TotalOutputTokens int64 // cumulative tokens across all runs
+	RequestType       string // e.g. "start_solver", "request_solution_change"
+	AdditionalContext string // the additional_context from the request, if any
+	InputTokens       int64  // tokens for the current/latest run
+	OutputTokens      int64  // tokens for the current/latest run
+	TotalInputTokens  int64  // cumulative tokens across all runs
+	TotalOutputTokens int64  // cumulative tokens across all runs
 	HasRun            bool
+	LogLines          []string  // all extracted text lines from JSONL stream
+	SparklineData     []float64 // per-event total token values for sparkline
 }
 
 // Orchestrator manages the lifecycle of agent processes.
@@ -38,6 +42,7 @@ type Orchestrator struct {
 	completedDir string
 	userPrompt   string
 	rawMode      bool
+	NoSparklines bool
 
 	// Per-agent work channels enforce serial execution per agent type
 	channels map[agent.AgentType]chan workItem
@@ -66,10 +71,11 @@ type Orchestrator struct {
 	copyMu map[agent.AgentType]*sync.Mutex
 
 	// State for TUI rendering (protected by mu)
-	mu             sync.RWMutex
-	agentInfo      map[agent.AgentType]*AgentInfo
-	completedCount int32 // atomic
-	startTime      time.Time
+	mu              sync.RWMutex
+	agentInfo       map[agent.AgentType]*AgentInfo
+	completedCount  int32 // atomic
+	startTime       time.Time
+	sharedMaxTokens float64 // shared maximum for sparkline normalization
 }
 
 type workItem struct {
@@ -86,7 +92,7 @@ type workBatch struct {
 	foldedChangeContext string    // Context from request_*_change items folded into a start_* batch
 }
 
-func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration) *Orchestrator {
+func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool) *Orchestrator {
 	info := make(map[agent.AgentType]*AgentInfo)
 	cmu := make(map[agent.AgentType]*sync.Mutex)
 	for _, at := range agent.AllTypes() {
@@ -99,6 +105,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 		completedDir: filepath.Join(baseDir, ".bobbi", "completed"),
 		userPrompt:   userPrompt,
 		rawMode:      rawMode,
+		NoSparklines: noSparklines,
 		channels:     make(map[agent.AgentType]chan workItem),
 		dispatched:   make(map[string]bool),
 		retryCount:   make(map[string]int),
@@ -107,6 +114,13 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration)
 		copyMu:       cmu,
 		agentInfo:    info,
 	}
+}
+
+// GetSharedMaxTokens returns the shared maximum token value for sparkline normalization.
+func (o *Orchestrator) GetSharedMaxTokens() float64 {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.sharedMaxTokens
 }
 
 // EnableFileLogging opens .bobbi/log.txt for writing log output.
@@ -649,13 +663,23 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 		return
 	}
 
+	// Determine the additional context for display priority
+	additionalCtx := batch.mergedContext
+	if additionalCtx == "" && len(batch.items) > 0 {
+		additionalCtx = batch.items[0].request.Request.AdditionalContext
+	}
+
 	// Update agent state to running
 	o.mu.Lock()
 	info := o.agentInfo[agentType]
 	info.Status = "running"
 	info.Prompt = prompt
+	info.RequestType = batch.requestType
+	info.AdditionalContext = additionalCtx
 	info.InputTokens = 0
 	info.OutputTokens = 0
+	info.LogLines = nil
+	info.SparklineData = nil
 	o.mu.Unlock()
 
 	o.log("Starting %s agent", agentType)
@@ -668,6 +692,18 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 			info.OutputTokens += output
 			info.TotalInputTokens += input
 			info.TotalOutputTokens += output
+			// Track sparkline data: total tokens per event
+			eventTotal := float64(input + output)
+			info.SparklineData = append(info.SparklineData, eventTotal)
+			if eventTotal > o.sharedMaxTokens {
+				o.sharedMaxTokens = eventTotal
+			}
+			o.mu.Unlock()
+		},
+		OnText: func(text string) {
+			o.mu.Lock()
+			lines := strings.Split(text, "\n")
+			info.LogLines = append(info.LogLines, lines...)
 			o.mu.Unlock()
 		},
 		LogFunc: func(format string, args ...interface{}) {

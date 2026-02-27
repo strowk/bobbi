@@ -24,6 +24,7 @@ func Up(args []string) error {
 	promptFlag := fs.String("p", "", "prompt to pass to architect")
 	rawFlag := fs.Bool("raw", false, "disable Terminal UI and use raw streamed output mode")
 	noLogFlag := fs.Bool("no-log", false, "disable writing logs to file")
+	noSparklinesFlag := fs.Bool("no-sparklines", false, "disable per-agent activity sparkline charts in the Terminal UI")
 	timeoutFlag := fs.Duration("timeout", 30*time.Minute, "maximum time limit for the entire orchestrator run (0 to disable)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -66,7 +67,7 @@ func Up(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag)
+	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag, *noSparklinesFlag)
 
 	// Enable file logging if applicable
 	if enableFileLog {

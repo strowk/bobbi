@@ -173,8 +173,7 @@ func McpJSON(agentType AgentType, bobbiBin string) string {
 }
 
 func GitIgnore(agentType AgentType) string {
-	common := `.mcp.json
-.claude/settings.json
+	common := `.claude/settings.json
 `
 	switch agentType {
 	case Solver:

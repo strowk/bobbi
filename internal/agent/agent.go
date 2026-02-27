@@ -66,11 +66,6 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 	}
 	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 
-	// Regenerate .mcp.json to point to the correct binary
-	if err := os.WriteFile(filepath.Join(workDir, ".mcp.json"), []byte(McpJSON(agentType, bobbiBin)), 0644); err != nil {
-		return fmt.Errorf("write .mcp.json: %w", err)
-	}
-
 	// Regenerate .claude/settings.json with correct absolute paths
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
@@ -84,11 +79,16 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("write settings.json: %w", err)
 	}
 
+	// Build MCP config JSON to pass via CLI argument
+	mcpConfig := McpJSON(agentType, bobbiBin)
+
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p", "-",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--mcp-config", mcpConfig,
+		"--strict-mcp-config",
 	)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)

@@ -3,7 +3,6 @@ bobbi-test*
 architecture/
 solution-deliverable/*
 !solution-deliverable/.gitkeep
-.mcp.json
 .claude/settings.json
 bobbi.exe
 bobbi

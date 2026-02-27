@@ -745,6 +745,14 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 			info.LogLines = append(info.LogLines, lines...)
 			o.mu.Unlock()
 		},
+		OnSessionID: func(sessionID string) {
+			o.log("Captured session_id %s for %s agent", sessionID, agentType)
+			for _, item := range batch.items {
+				if err := queue.UpdateSessionID(item.requestPath, sessionID); err != nil {
+					o.log("Error updating session_id in %s: %v", item.requestPath, err)
+				}
+			}
+		},
 		LogFunc: func(format string, args ...interface{}) {
 			o.log(format, args...)
 		},

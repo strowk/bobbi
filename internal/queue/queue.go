@@ -18,6 +18,7 @@ type RequestData struct {
 
 type Request struct {
 	Timestamp time.Time   `yaml:"timestamp"`
+	SessionID string      `yaml:"session_id,omitempty"`
 	Request   RequestData `yaml:"request"`
 }
 
@@ -132,6 +133,35 @@ func ReadRequests(queuesDir string, logFn LogFunc) ([]Request, []string, error) 
 	}
 
 	return requests, paths, nil
+}
+
+// UpdateSessionID reads the request YAML file at the given path, sets the
+// session_id field, and writes it back in place. If the file no longer exists
+// (e.g., already moved to completed), the update is skipped silently.
+func UpdateSessionID(requestPath, sessionID string) error {
+	data, err := os.ReadFile(requestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // file already moved, skip silently
+		}
+		return fmt.Errorf("read request file: %w", err)
+	}
+	var req Request
+	if err := yaml.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("parse request file: %w", err)
+	}
+	req.SessionID = sessionID
+	out, err := yaml.Marshal(&req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	if err := os.WriteFile(requestPath, out, 0644); err != nil {
+		if os.IsNotExist(err) {
+			return nil // file moved between read and write, skip silently
+		}
+		return fmt.Errorf("write request file: %w", err)
+	}
+	return nil
 }
 
 func MarkCompleted(requestPath, completedDir string) error {

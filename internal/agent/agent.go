@@ -49,6 +49,8 @@ type StartOptions struct {
 	OnTokens func(input, output int64)
 	// OnText is called with extracted text content from assistant and result JSONL events.
 	OnText func(text string)
+	// OnSessionID is called once with the sessionId from the first JSONL event that contains one.
+	OnSessionID func(sessionID string)
 	// StdoutWriter receives all stdout lines. If nil, stdout is discarded.
 	StdoutWriter io.Writer
 	// StderrWriter receives all stderr lines. If nil, stderr is discarded.
@@ -145,6 +147,7 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 		defer close(done)
 		scanner := bufio.NewScanner(stdoutPipe)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		sessionIDCaptured := false
 		for scanner.Scan() {
 			line := scanner.Text()
 			if opts.OnTokens != nil {
@@ -152,6 +155,12 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 			}
 			if opts.OnText != nil {
 				parseTextContent(line, opts.OnText)
+			}
+			if opts.OnSessionID != nil && !sessionIDCaptured {
+				if sid := parseSessionID(line); sid != "" {
+					sessionIDCaptured = true
+					opts.OnSessionID(sid)
+				}
 			}
 			if opts.StdoutWriter != nil {
 				fmt.Fprintln(opts.StdoutWriter, line)
@@ -192,8 +201,9 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 
 // claudeEvent represents the relevant fields of a JSONL event from claude's stream-json output.
 type claudeEvent struct {
-	Type    string `json:"type"`
-	Message *struct {
+	Type      string `json:"type"`
+	SessionID string `json:"sessionId"`
+	Message   *struct {
 		Usage *struct {
 			InputTokens              int64 `json:"input_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
@@ -246,6 +256,15 @@ func extractTextFromContent(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(texts, "\n")
+}
+
+// parseSessionID extracts the sessionId from a JSONL line, returning it if non-empty.
+func parseSessionID(line string) string {
+	var event claudeEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return ""
+	}
+	return event.SessionID
 }
 
 // parseTextContent extracts text content from a JSONL line and calls onText if found.

@@ -155,6 +155,12 @@ project/
 
 **Reviewer** -- `request_solution_change`
 
+## Dogfooding
+
+BOBBI is developed using BOBBI. The very system described above -- architect, solver, evaluator, reviewer -- is the same system that builds and refines its own codebase.
+
+This ouroboric setup is not just a novelty. It serves as a continuous integration test of the system itself: if BOBBI can successfully orchestrate its own development, it validates the core design. Bugs in the orchestrator, gaps in the contract, or flaws in agent communication surface naturally as the system tries to improve itself.
+
 ## License
 
 TBD

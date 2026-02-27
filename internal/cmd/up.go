@@ -110,8 +110,8 @@ func Up(args []string) error {
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
-	cancel()
 	orchErr := <-errCh
+	cancel()
 	return orchErr
 }
 

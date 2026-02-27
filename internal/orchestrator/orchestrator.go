@@ -216,9 +216,14 @@ func (o *Orchestrator) Done() <-chan struct{} {
 }
 
 // isShuttingDown returns true if the orchestrator has begun shutting down.
+// It checks both shutdownCh (SIGINT/timeout) and done (confirm_solution)
+// to close the race window between confirm_solution closing done and the
+// main loop propagating to shutdownCh.
 func (o *Orchestrator) isShuttingDown() bool {
 	select {
 	case <-o.shutdownCh:
+		return true
+	case <-o.done:
 		return true
 	default:
 		return false
@@ -279,6 +284,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		if _, err := queue.WriteRequest(o.queuesDir, "start_architect", from, o.userPrompt); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
+	} else if len(requests) > 0 {
+		// Apply cross-agent-type sanitization on startup queue
+		o.sanitizeStartupQueue()
 	}
 
 	if o.timeout > 0 {
@@ -338,6 +346,60 @@ func (o *Orchestrator) drainQueues() {
 	}
 	if len(paths) > 0 {
 		o.log("Drained %d remaining queue file(s) to completed", len(paths))
+	}
+}
+
+// sanitizeStartupQueue applies cross-agent-type sanitization rules to the
+// startup queue. When request_solution_change is present, it drops stale
+// start_evaluator/start_reviewer (without additional_context) and handoff_solution
+// requests, since evaluating/reviewing a solution that is about to change is wasteful.
+func (o *Orchestrator) sanitizeStartupQueue() {
+	requests, paths, err := queue.ReadRequests(o.queuesDir, o.log)
+	if err != nil || len(requests) == 0 {
+		return
+	}
+
+	// Check if there's at least one request_solution_change
+	hasRequestSolutionChange := false
+	for _, req := range requests {
+		if req.Request.Type == "request_solution_change" {
+			hasRequestSolutionChange = true
+			break
+		}
+	}
+	if !hasRequestSolutionChange {
+		return
+	}
+
+	dropped := 0
+	for i, req := range requests {
+		reqType := req.Request.Type
+
+		// Rule 1: request_solution_change supersedes start_evaluator/start_reviewer without additional_context
+		if (reqType == "start_evaluator" || reqType == "start_reviewer") && req.Request.AdditionalContext == "" {
+			o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
+			if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
+				o.log("Error marking completed during sanitization: %v", err)
+			}
+			atomic.AddInt32(&o.completedCount, 1)
+			dropped++
+			continue
+		}
+
+		// Rule 2: request_solution_change supersedes handoff_solution
+		if reqType == "handoff_solution" {
+			o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
+			if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
+				o.log("Error marking completed during sanitization: %v", err)
+			}
+			atomic.AddInt32(&o.completedCount, 1)
+			dropped++
+			continue
+		}
+	}
+
+	if dropped > 0 {
+		o.log("Startup sanitization: dropped %d stale request(s)", dropped)
 	}
 }
 

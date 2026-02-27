@@ -57,6 +57,12 @@ type Orchestrator struct {
 	done     chan struct{} // closed on confirm_solution
 	doneOnce sync.Once
 
+	// shutdownCh is closed when any shutdown is initiated (SIGINT, timeout,
+	// or confirm_solution). Workers check this to stop starting new batches.
+	// Separate from 'done' which is only for confirm_solution.
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+
 	// File logging
 	logFile   *os.File
 	logFileMu sync.Mutex
@@ -111,6 +117,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		retryCount:   make(map[string]int),
 		timeout:      timeout,
 		done:         make(chan struct{}),
+		shutdownCh:   make(chan struct{}),
 		copyMu:       cmu,
 		agentInfo:    info,
 	}
@@ -208,6 +215,16 @@ func (o *Orchestrator) Done() <-chan struct{} {
 	return o.done
 }
 
+// isShuttingDown returns true if the orchestrator has begun shutting down.
+func (o *Orchestrator) isShuttingDown() bool {
+	select {
+	case <-o.shutdownCh:
+		return true
+	default:
+		return false
+	}
+}
+
 func (o *Orchestrator) log(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if o.rawMode {
@@ -248,7 +265,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		ch := make(chan workItem, 100)
 		o.channels[at] = ch
 		o.wg.Add(1)
-		go o.worker(ctx, at, ch)
+		go o.worker(at, ch)
 	}
 
 	// Bootstrap: if queue is empty, enqueue start_architect
@@ -291,6 +308,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				o.log("Shutting down orchestrator...")
 			}
 			o.shutdown()
+			o.drainQueues()
 			return nil
 		case <-ticker.C:
 			o.poll()
@@ -299,9 +317,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 }
 
 func (o *Orchestrator) shutdown() {
-	for _, ch := range o.channels {
-		close(ch)
-	}
+	o.shutdownOnce.Do(func() {
+		close(o.shutdownCh)
+		for _, ch := range o.channels {
+			close(ch)
+		}
+	})
 	o.wg.Wait()
 }
 
@@ -406,7 +427,7 @@ func (o *Orchestrator) routeRequest(reqType string) agent.AgentType {
 	return ""
 }
 
-func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch <-chan workItem) {
+func (o *Orchestrator) worker(agentType agent.AgentType, ch <-chan workItem) {
 	defer o.wg.Done()
 	for {
 		// Block until first item arrives (or channel closes)
@@ -415,10 +436,10 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 			return
 		}
 
-		select {
-		case <-ctx.Done():
+		// If shutdown has been initiated, exit without starting new work.
+		// Remaining queue files will be drained by drainQueues().
+		if o.isShuttingDown() {
 			return
-		default:
 		}
 
 		// Non-blocking drain of all currently-pending items
@@ -441,21 +462,19 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 
 		// Process each batch in priority order
 		for _, batch := range batches {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			// If done (confirm_solution received), skip processing but
-			// still mark items completed so queue files are cleaned up.
-			select {
-			case <-o.done:
-				o.log("Skipping %s batch (solution confirmed, shutting down)", agentType)
-				o.markItemsCompleted(batch.items)
+			// If shutting down, skip remaining batches.
+			if o.isShuttingDown() {
+				// For confirm_solution, mark items completed for clean tracking.
+				// For SIGINT/timeout, drainQueues handles remaining files.
+				select {
+				case <-o.done:
+					o.log("Skipping %s batch (solution confirmed, shutting down)", agentType)
+					o.markItemsCompleted(batch.items)
+				default:
+				}
 				continue
-			default:
 			}
-			o.processBatch(ctx, agentType, batch)
+			o.processBatch(agentType, batch)
 		}
 	}
 }
@@ -653,12 +672,10 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 }
 
 // processBatch runs a single agent session for a coalesced batch of work items.
-func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentType, batch workBatch) {
-	select {
-	case <-ctx.Done():
+func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) {
+	if o.isShuttingDown() {
 		o.log("Skipping %s agent (shutting down)", agentType)
 		return
-	default:
 	}
 
 	if batch.itemCount > 1 {
@@ -746,7 +763,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 		}
 	}
 
-	agentErr := agent.StartAgent(ctx, agentType, repoDir, prompt, opts)
+	agentErr := agent.StartAgent(agentType, repoDir, prompt, opts)
 
 	// Update agent state to idle
 	o.mu.Lock()
@@ -769,13 +786,14 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 	}
 	o.retryMu.Unlock()
 
-	// Post-agent: copy outputs (once per batch, skip if cancelled)
+	// Post-agent: copy outputs (once per batch).
+	// Skip post-copy if solution was confirmed (no new work should be created).
 	select {
-	case <-ctx.Done():
-		return
+	case <-o.done:
+		// Solution confirmed — skip post-copy to avoid creating new queue files.
 	default:
+		o.postCopy(agentType, batch)
 	}
-	o.postCopy(agentType, batch)
 
 	// Mark ALL items in the batch as completed
 	o.markItemsCompleted(batch.items)

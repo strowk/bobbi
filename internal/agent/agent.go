@@ -2,7 +2,6 @@ package agent
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,8 +58,9 @@ type StartOptions struct {
 }
 
 // StartAgent launches a claude process for the given agent type.
-// It blocks until the agent finishes or the context is cancelled.
-func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt string, opts *StartOptions) error {
+// It blocks until the agent process exits. The process is never killed;
+// it always runs to completion (per contract: agents finish naturally).
+func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartOptions) error {
 	if opts == nil {
 		opts = &StartOptions{}
 	}
@@ -99,7 +99,7 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("resolve mcp config path: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "claude",
+	cmd := exec.Command("claude",
 		"-p", "-",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",

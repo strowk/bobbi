@@ -8,24 +8,22 @@ import (
 	"path/filepath"
 )
 
-// CopyDir copies src directory contents to dst, always excluding .git/.
+// CopyDir copies src directory contents to dst with no exclusions.
 func CopyDir(src, dst string) error {
 	return copyDirExcluding(src, dst, nil)
 }
 
 // CopyArchitectureContract copies src directory contents to dst,
-// excluding .git/, .claude/, .mcp.json, and .gitignore
-// so that only the actual architecture contract documents are copied.
+// excluding root-level .git/ and .claude/ per CONTRACT.md Section 6.1/6.2.
 func CopyArchitectureContract(src, dst string) error {
-	// note: DO NOT exclude SPECIFICATION.md file, it is part of architecture
-	return copyDirExcluding(src, dst, []string{".claude", ".mcp.json", ".gitignore"})
+	return copyDirExcluding(src, dst, []string{".git", ".claude"})
 }
 
 // CopySolutionSource copies src directory contents to dst,
-// excluding .git/, architecture/, solution-deliverable/, and bobbi config
-// files (.claude/, .mcp.json, .gitignore) so only actual solution code is copied.
+// excluding root-level .git/, .claude/, architecture/, solution-deliverable/
+// per CONTRACT.md Section 6.1.
 func CopySolutionSource(src, dst string) error {
-	return copyDirExcluding(src, dst, []string{"architecture", "solution-deliverable", ".claude", ".mcp.json", ".gitignore"})
+	return copyDirExcluding(src, dst, []string{".git", "architecture", "solution-deliverable", ".claude"})
 }
 
 func copyDirExcluding(src, dst string, excludeNames []string) error {
@@ -45,12 +43,7 @@ func copyDirExcluding(src, dst string, excludeNames []string) error {
 			return nil
 		}
 
-		// Always exclude .git at any depth
-		if d.IsDir() && d.Name() == ".git" {
-			return filepath.SkipDir
-		}
-
-		// Exclude specified names (files or dirs) at the top level
+		// Exclude specified names (files or dirs) at the root level only
 		if filepath.Dir(rel) == "." && rel != "." {
 			for _, ex := range excludeNames {
 				if d.Name() == ex {

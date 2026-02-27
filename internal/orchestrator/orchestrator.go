@@ -144,12 +144,22 @@ func (o *Orchestrator) CloseLogFile() {
 	}
 }
 
-// GetAgentInfo returns a copy of the agent info for the given type.
+// GetAgentInfo returns a deep copy of the agent info for the given type.
 func (o *Orchestrator) GetAgentInfo(at agent.AgentType) AgentInfo {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	if info, ok := o.agentInfo[at]; ok {
-		return *info
+		cp := *info
+		// Deep copy slices to avoid data races with concurrent appends.
+		if info.LogLines != nil {
+			cp.LogLines = make([]string, len(info.LogLines))
+			copy(cp.LogLines, info.LogLines)
+		}
+		if info.SparklineData != nil {
+			cp.SparklineData = make([]float64, len(info.SparklineData))
+			copy(cp.SparklineData, info.SparklineData)
+		}
+		return cp
 	}
 	return AgentInfo{Status: "idle"}
 }
@@ -434,6 +444,15 @@ func (o *Orchestrator) worker(ctx context.Context, agentType agent.AgentType, ch
 			select {
 			case <-ctx.Done():
 				return
+			default:
+			}
+			// If done (confirm_solution received), skip processing but
+			// still mark items completed so queue files are cleaned up.
+			select {
+			case <-o.done:
+				o.log("Skipping %s batch (solution confirmed, shutting down)", agentType)
+				o.markItemsCompleted(batch.items)
+				continue
 			default:
 			}
 			o.processBatch(ctx, agentType, batch)

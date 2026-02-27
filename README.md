@@ -4,9 +4,11 @@
 
 # BOBBII
 
-### Black OuroBorotic Box Intelligence
+### Black OuroBorotic Box of Intelligence
 
-*A fully autonomous code development system where isolated AI agents collaborate through structured communication to solve programming problems.*
+*Chaos ordered by automation.*
+
+**A fully autonomous code development system where isolated AI agents collaborate through structured communication to solve programming problems.**
 
 ---
 

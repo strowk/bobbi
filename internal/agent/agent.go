@@ -41,6 +41,9 @@ func RepoDir(agentType AgentType) string {
 
 // StartOptions configures agent process I/O and callbacks.
 type StartOptions struct {
+	// BaseDir is the BOBBI project root directory (parent of agent repo dirs).
+	// Used to write MCP config files to .bobbi/mcp-config-<agent-type>.json.
+	BaseDir string
 	// OnTokens is called for each JSONL assistant event with token usage.
 	// input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 	// output = output_tokens
@@ -81,16 +84,27 @@ func StartAgent(ctx context.Context, agentType AgentType, workDir string, prompt
 		return fmt.Errorf("write settings.json: %w", err)
 	}
 
-	// Build MCP config JSON to pass via CLI argument
-	mcpConfig := McpJSON(agentType, bobbiBin)
+	// Write MCP config to .bobbi/mcp-config-<agent-type>.json at the project root
+	mcpConfigContent := McpJSON(agentType, bobbiBin)
+	mcpConfigDir := filepath.Join(opts.BaseDir, ".bobbi")
+	if err := os.MkdirAll(mcpConfigDir, 0755); err != nil {
+		return fmt.Errorf("create .bobbi dir for mcp config: %w", err)
+	}
+	mcpConfigPath := filepath.Join(mcpConfigDir, fmt.Sprintf("mcp-config-%s.json", agentType))
+	if err := os.WriteFile(mcpConfigPath, []byte(mcpConfigContent), 0644); err != nil {
+		return fmt.Errorf("write mcp config file: %w", err)
+	}
+	absMcpConfigPath, err := filepath.Abs(mcpConfigPath)
+	if err != nil {
+		return fmt.Errorf("resolve mcp config path: %w", err)
+	}
 
 	cmd := exec.CommandContext(ctx, "claude",
 		"-p", "-",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--mcp-config", mcpConfig,
-		"--strict-mcp-config",
+		"--mcp-config", absMcpConfigPath,
 	)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)

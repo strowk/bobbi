@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bobbi": {
+      "type": "stdio",
+      "command": "C:/Users/strow/go/bin/bobbi.exe",
+      "args": ["mcp", "--agent", "solver"]
+    }
+  }
+}

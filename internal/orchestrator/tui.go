@@ -526,15 +526,3 @@ func formatNumber(n int64) string {
 	return prefix + string(result)
 }
 
-// truncatePrompt truncates a prompt to maxLen characters.
-func truncatePrompt(prompt string, maxLen int) string {
-	prompt = strings.ReplaceAll(prompt, "\n", " ")
-	runes := []rune(prompt)
-	if len(runes) > maxLen {
-		if maxLen > 3 {
-			return string(runes[:maxLen-3]) + "..."
-		}
-		return string(runes[:maxLen])
-	}
-	return prompt
-}

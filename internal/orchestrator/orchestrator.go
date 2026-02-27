@@ -984,6 +984,9 @@ func (o *Orchestrator) handleHandoffSolution() {
 
 func (o *Orchestrator) handleConfirmSolution() {
 	// 1. Copy evaluation/solution-deliverable/ to output/
+	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
+	// which writes to the same evaluator directory concurrently.
+	o.copyMu[agent.Evaluator].Lock()
 	srcDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	dstOutput := filepath.Join(o.baseDir, "output")
 	if err := os.RemoveAll(dstOutput); err != nil {
@@ -994,6 +997,7 @@ func (o *Orchestrator) handleConfirmSolution() {
 	} else if err := CopyDir(srcDeliverable, dstOutput); err != nil {
 		o.log("Error copying deliverable to output: %v", err)
 	}
+	o.copyMu[agent.Evaluator].Unlock()
 
 	o.log("========================================")
 	o.log("Solution confirmed and delivered!")

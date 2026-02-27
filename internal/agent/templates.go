@@ -69,6 +69,7 @@ You are a test engineer. Your job is to verify that a solution meets the technic
 - Test based ONLY on the technical contract, not on implementation details
 - Write clear, specific test cases
 - Provide actionable feedback when tests fail
+- When sending feedback via request_solution_change, do NOT reference files from your own repository (your test files, etc.) — the recipient cannot see them. You MAY reference files in architecture/ since those are shared. Describe problems in terms of expected vs actual behavior, error messages, and contract requirements.
 - Commit your test code to git as you work
 `
 
@@ -117,7 +118,7 @@ You are a code reviewer. Your job is to review solution code for quality and con
 - Focus on code quality and contract compliance — do not rewrite or reimplement the solution
 - Provide specific, actionable feedback
 - Prioritize correctness and maintainability issues
-- When sending feedback via request_solution_change, you can only reference architecture files, NOT other files from your tree
+- When sending feedback via request_solution_change, do NOT reference files from your own repository — the recipient cannot see them. You MAY reference files in architecture/ (shared) or describe issues by referencing the solution's own file paths (which the recipient can see). Describe problems clearly with enough context for the recipient to act independently.
 `
 	}
 	return ""

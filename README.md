@@ -1,8 +1,8 @@
 <div align="center">
 
-![BOBBII](images/logo.png)
+![BOBBI](images/logo.png)
 
-# BOBBII
+# BOBBI
 
 ### Black OuroBorotic Box of Intelligence
 
@@ -18,7 +18,7 @@
 
 ## Overview
 
-BOBBII orchestrates multiple AI agents -- each with a distinct role and isolated workspace -- to develop, evaluate, and refine code autonomously. Agents communicate indirectly through a queue-based system and never see each other's internals, preventing overfitting and ensuring genuine, independent work.
+BOBBI orchestrates multiple AI agents -- each with a distinct role and isolated workspace -- to develop, evaluate, and refine code autonomously. Agents communicate indirectly through a queue-based system and never see each other's internals, preventing overfitting and ensuring genuine, independent work.
 
 The result is a closed-loop development cycle where a **Solver** writes code, an **Evaluator** tests it, an **Architect** maintains the specification, and a **Reviewer** checks quality -- all without human intervention.
 

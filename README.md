@@ -6,7 +6,7 @@
 
 ### Black OuroBorotic Box of Intelligence
 
-*Chaos ordered by automation.*
+*Chaos of creation ordered by logic.*
 
 **A fully autonomous code development system where isolated AI agents collaborate through structured communication to solve programming problems.**
 

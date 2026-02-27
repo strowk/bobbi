@@ -70,7 +70,6 @@ You are a test engineer. Your job is to verify that a solution meets the technic
 - Write clear, specific test cases
 - Provide actionable feedback when tests fail
 - Commit your test code to git as you work
-- When sending feedback via request_solution_change, you can only reference architecture files, NOT other files from your tree
 `
 
 	case Architect:
@@ -137,12 +136,12 @@ func SettingsJSON(workDir string) string {
 	s := settings{
 		Permissions: permissions{
 			Allow: []string{
+				fmt.Sprintf("Bash(%s/*)", workDir),
 				fmt.Sprintf("Read(%s/*)", workDir),
 				fmt.Sprintf("Write(%s/*)", workDir),
 				fmt.Sprintf("Edit(%s/*)", workDir),
 				fmt.Sprintf("Glob(%s/*)", workDir),
 				fmt.Sprintf("Grep(%s/*)", workDir),
-				fmt.Sprintf("Bash(%s/*)", workDir),
 				"WebFetch(*)",
 				"WebSearch(*)",
 				"mcp__bobbi__*",

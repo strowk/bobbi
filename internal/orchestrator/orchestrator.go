@@ -598,15 +598,17 @@ func mergeContext(items []workItem) string {
 // Used when folding request_*_change context into start_* prompts.
 func mergeContextAttributed(items []workItem) string {
 	var parts []string
-	for i, item := range items {
+	counter := 0
+	for _, item := range items {
 		ctx := item.request.Request.AdditionalContext
 		if ctx == "" {
 			continue
 		}
+		counter++
 		from := item.request.Request.From
 		parts = append(parts, fmt.Sprintf(
 			"--- Feedback %d (from %s) ---\n%s",
-			i+1, from, ctx,
+			counter, from, ctx,
 		))
 	}
 

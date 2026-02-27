@@ -94,7 +94,7 @@ func Up(args []string) error {
 
 	// TUI mode
 	model := orchestrator.NewTUIModel(orch, cancel)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	errCh := make(chan error, 1)
 	go func() {

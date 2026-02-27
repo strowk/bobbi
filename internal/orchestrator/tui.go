@@ -86,6 +86,24 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateMainView(msg)
 
+	case tea.MouseMsg:
+		if m.detailView {
+			switch msg.Type {
+			case tea.MouseWheelUp:
+				m.followMode = false
+				if m.detailOffset > 0 {
+					m.detailOffset -= 3
+					if m.detailOffset < 0 {
+						m.detailOffset = 0
+					}
+				}
+			case tea.MouseWheelDown:
+				m.detailOffset += 3
+				m.clampDetailOffset()
+			}
+		}
+		return m, nil
+
 	case tickMsg:
 		select {
 		case <-m.orch.Done():

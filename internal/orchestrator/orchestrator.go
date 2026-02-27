@@ -686,6 +686,7 @@ func (o *Orchestrator) processBatch(ctx context.Context, agentType agent.AgentTy
 
 	// Build start options
 	opts := &agent.StartOptions{
+		BaseDir: o.baseDir,
 		OnTokens: func(input, output int64) {
 			o.mu.Lock()
 			info.InputTokens += input

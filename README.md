@@ -1,10 +1,10 @@
 <div align="center">
 
-![BOBBI](images/logo.png)
+<img src="images/logo.png" alt="BOBBI Logo" width="250"/>
 
 # BOBBI
 
-### Black OuroBorotic Box of Intelligence
+## Black OuroBorotic Box of Intelligence
 
 *Chaos of creation ordered by logic.*
 

@@ -423,15 +423,16 @@ func (o *Orchestrator) poll() {
 			continue
 		case "confirm_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
-			o.wg.Add(1)
-			go func(wi workItem) {
-				defer o.wg.Done()
-				o.handleConfirmSolution(wi)
-				o.dispatchedMu.Lock()
-				delete(o.dispatched, wi.requestPath)
-				o.dispatchedMu.Unlock()
-			}(item)
-			continue
+			// Process synchronously so done is closed before we dispatch anything else.
+			// This ensures no new agent sessions are started after confirm_solution
+			// (CONTRACT Section 6.5, step 4a).
+			o.handleConfirmSolution(item)
+			o.dispatchedMu.Lock()
+			delete(o.dispatched, item.requestPath)
+			o.dispatchedMu.Unlock()
+			// Return immediately — stop dispatching. Undispatched requests
+			// remain in .bobbi/queues/ for the next run (CONTRACT Section 6.5, step 5).
+			return
 		}
 
 		targetAgent := o.routeRequest(reqType)

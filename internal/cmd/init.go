@@ -22,7 +22,7 @@ func Init() error {
 	}
 
 	// Create .bobbi directories
-	for _, dir := range []string{".bobbi", ".bobbi/queues", ".bobbi/completed", ".bobbi/failed"} {
+	for _, dir := range []string{".bobbi", ".bobbi/queues", ".bobbi/completed", ".bobbi/failed", ".bobbi/backlog"} {
 		if err := os.MkdirAll(filepath.Join(cwd, dir), 0755); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}

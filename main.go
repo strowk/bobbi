@@ -9,7 +9,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: bobbi <init|up|mcp|feedback>\n")
+		fmt.Fprintf(os.Stderr, "Usage: bobbi <init|up|mcp|feedback|backlog>\n")
 		os.Exit(1)
 	}
 
@@ -23,8 +23,10 @@ func main() {
 		err = cmd.MCP(os.Args[2:])
 	case "feedback":
 		err = cmd.Feedback(os.Args[2:])
+	case "backlog":
+		err = cmd.Backlog(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbi <init|up|mcp|feedback>\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbi <init|up|mcp|feedback|backlog>\n", os.Args[1])
 		os.Exit(1)
 	}
 

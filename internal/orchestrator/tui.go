@@ -264,9 +264,9 @@ func (m TUIModel) viewMain() string {
 	showSparklines := !m.orch.NoSparklines
 	var colHdrText string
 	if showSparklines {
-		colHdrText = fmt.Sprintf("  %-12s %-12s %-22s %s", "Agent", "Status", "Activity", "Tokens (in / out)")
+		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %-22s %s", "Agent", "Status", "Session", "Activity", "Tokens (in / out)")
 	} else {
-		colHdrText = fmt.Sprintf("  %-12s %-12s %s", "Agent", "Status", "Tokens (in / out)")
+		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %s", "Agent", "Status", "Session", "Tokens (in / out)")
 	}
 	colHdr := lipgloss.NewStyle().Bold(true).Foreground(colorLightGray).Render(colHdrText)
 	sep := lipgloss.NewStyle().Foreground(colorGray).
@@ -301,6 +301,18 @@ func (m TUIModel) viewMain() string {
 				Render(fmt.Sprintf("%-12s", "○ idle"))
 		}
 
+		// Session ID: show truncated UUID when running, "—" otherwise
+		sessionStr := "—"
+		if ai.Status == "running" && ai.SessionID != "" {
+			sid := ai.SessionID
+			if len(sid) > 8 {
+				sid = sid[:8]
+			}
+			sessionStr = sid
+		}
+		session := lipgloss.NewStyle().Foreground(colorDimGray).
+			Render(fmt.Sprintf("%-10s", sessionStr))
+
 		tok := lipgloss.NewStyle().Foreground(colorGray).Render("— / —")
 		if ai.HasRun || ai.InputTokens > 0 || ai.OutputTokens > 0 {
 			tok = lipgloss.NewStyle().Foreground(colorDimGray).
@@ -311,9 +323,9 @@ func (m TUIModel) viewMain() string {
 		var row string
 		if showSparklines {
 			sparkStr := renderSparkline(ai.SparklineData, sharedMax)
-			row = fmt.Sprintf("%s%s %s %-22s %s", indicator, name, status, sparkStr, tok)
+			row = fmt.Sprintf("%s%s %s %s %-22s %s", indicator, name, status, session, sparkStr, tok)
 		} else {
-			row = fmt.Sprintf("%s%s %s %s", indicator, name, status, tok)
+			row = fmt.Sprintf("%s%s %s %s %s", indicator, name, status, session, tok)
 		}
 
 		// Highlight selected row

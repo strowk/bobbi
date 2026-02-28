@@ -23,6 +23,7 @@ const maxAgentRetries = 3
 // AgentInfo holds the current state of a single agent type for display.
 type AgentInfo struct {
 	Status            string // "idle", "running", "queued"
+	SessionID         string // Claude Code session ID (truncated for display)
 	Prompt            string
 	RequestType       string // e.g. "start_solver", "request_solution_change"
 	AdditionalContext string // the additional_context from the request, if any
@@ -829,6 +830,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	o.mu.Lock()
 	info := o.agentInfo[agentType]
 	info.Status = "running"
+	info.SessionID = ""
 	info.Prompt = prompt
 	info.RequestType = batch.requestType
 	info.AdditionalContext = additionalCtx
@@ -865,6 +867,9 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 		},
 		OnSessionID: func(sessionID string) {
 			o.log("Captured session_id %s for %s agent", sessionID, agentType)
+			o.mu.Lock()
+			info.SessionID = sessionID
+			o.mu.Unlock()
 			for _, item := range batch.items {
 				if err := queue.UpdateSessionID(item.requestPath, sessionID); err != nil {
 					o.log("Error updating session_id in %s: %v", item.requestPath, err)

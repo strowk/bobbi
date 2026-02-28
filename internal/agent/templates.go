@@ -88,7 +88,11 @@ You are a software architect. Your job is to create and maintain a technical con
    - What the solution should implement (interfaces, behavior, features)
    - What deliverable the solution should produce and how to use it
    - What test criteria should be verified against
-3. Commit your changes
+3. When you make changes to the contract, use the request_solution_change MCP tool to describe what changed and why, providing enough context for the implementer to adjust their existing solution accordingly. You MAY reference files from this repository since they are shared with the implementer.
+4. Commit your changes
+
+## Tools
+- Use the request_solution_change MCP tool to communicate architecture changes to the implementer with curated descriptions of what changed
 
 ## Rules
 - Be precise and unambiguous in your technical contract
@@ -158,18 +162,19 @@ func SettingsJSON(workDir string) string {
 	return string(data)
 }
 
-func McpJSON(agentType AgentType, bobbiBin string) string {
+func McpJSON(agentType AgentType, bobbiBin string, queuesDir string) string {
 	// Normalize to forward slashes so the command path is valid JSON on Windows
 	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
+	queuesDir = strings.ReplaceAll(queuesDir, `\`, "/")
 	return fmt.Sprintf(`{
   "mcpServers": {
     "bobbi": {
       "type": "stdio",
       "command": %q,
-      "args": ["mcp", "--agent", %q]
+      "args": ["mcp", "--agent", %q, "--queues-dir", %q]
     }
   }
-}`, bobbiBin, string(agentType))
+}`, bobbiBin, string(agentType), queuesDir)
 }
 
 func GitIgnore(agentType AgentType) string {

@@ -317,7 +317,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-o.done:
 			o.log("Solution confirmed, shutting down...")
 			o.shutdown()
-			o.drainQueues()
 			return nil
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
@@ -326,7 +325,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				o.log("Shutting down orchestrator...")
 			}
 			o.shutdown()
-			o.drainQueues()
 			return nil
 		case <-ticker.C:
 			o.poll()
@@ -342,21 +340,6 @@ func (o *Orchestrator) shutdown() {
 		}
 	})
 	o.wg.Wait()
-}
-
-func (o *Orchestrator) drainQueues() {
-	_, paths, err := queue.ReadRequests(o.queuesDir, o.log)
-	if err != nil {
-		return
-	}
-	for _, p := range paths {
-		if err := queue.MarkCompleted(p, o.completedDir); err != nil {
-			o.log("Error draining queue file %s: %v", p, err)
-		}
-	}
-	if len(paths) > 0 {
-		o.log("Drained %d remaining queue file(s) to completed", len(paths))
-	}
 }
 
 // sanitizeStartupQueue applies cross-agent-type sanitization rules to the
@@ -441,7 +424,13 @@ func (o *Orchestrator) poll() {
 		case "confirm_solution":
 			o.log("Processing %s request (from: %s) directly", reqType, req.Request.From)
 			o.wg.Add(1)
-			go o.handleDirectRequest(item, o.handleConfirmSolution)
+			go func(wi workItem) {
+				defer o.wg.Done()
+				o.handleConfirmSolution(wi)
+				o.dispatchedMu.Lock()
+				delete(o.dispatched, wi.requestPath)
+				o.dispatchedMu.Unlock()
+			}(item)
 			continue
 		}
 
@@ -509,7 +498,7 @@ func (o *Orchestrator) worker(agentType agent.AgentType, ch <-chan workItem) {
 		}
 
 		// If shutdown has been initiated, exit without starting new work.
-		// Remaining queue files will be drained by drainQueues().
+		// Remaining queue files stay in .bobbi/queues/ for the next run.
 		if o.isShuttingDown() {
 			return
 		}
@@ -535,15 +524,9 @@ func (o *Orchestrator) worker(agentType agent.AgentType, ch <-chan workItem) {
 		// Process each batch in priority order
 		for _, batch := range batches {
 			// If shutting down, skip remaining batches.
+			// Items stay in .bobbi/queues/ — they were never dispatched to an agent.
 			if o.isShuttingDown() {
-				// For confirm_solution, mark items completed for clean tracking.
-				// For SIGINT/timeout, drainQueues handles remaining files.
-				select {
-				case <-o.done:
-					o.log("Skipping %s batch (solution confirmed, shutting down)", agentType)
-					o.markItemsCompleted(batch.items)
-				default:
-				}
+				o.log("Skipping %s batch (shutting down)", agentType)
 				continue
 			}
 			o.processBatch(agentType, batch)
@@ -840,6 +823,13 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info.SparklineData = nil
 	o.mu.Unlock()
 
+	// Snapshot queue files before starting the architect, so we can detect
+	// new request_solution_change entries created during the session.
+	var preAgentQueueFiles map[string]bool
+	if agentType == agent.Architect {
+		preAgentQueueFiles = o.snapshotQueueFiles()
+	}
+
 	o.log("Starting %s agent", agentType)
 
 	// Build start options
@@ -925,7 +915,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	case <-o.done:
 		// Solution confirmed — skip post-copy to avoid creating new queue files.
 	default:
-		o.postCopy(agentType, batch)
+		o.postCopy(agentType, batch, preAgentQueueFiles)
 	}
 
 	// Mark ALL items in the batch as completed
@@ -968,10 +958,12 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 	return nil
 }
 
-func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
+func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch, preAgentQueueFiles map[string]bool) {
 	switch agentType {
 	case agent.Architect:
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
+
+		// Always copy architecture to solver and evaluator repos
 		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
 			o.copyMu[target].Lock()
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
@@ -987,6 +979,14 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
 				o.log("Error copying architecture to %s: %v", target, err)
 			}
 			o.copyMu[target].Unlock()
+		}
+
+		// Check if the architect created request_solution_change entries during its session.
+		// If so, skip auto-enqueueing start_solver — the architect's entries will
+		// trigger the solver independently via the normal queue flow.
+		if o.hasNewSolverRequestsFromArchitect(preAgentQueueFiles) {
+			o.log("Architect created request_solution_change entries; skipping auto start_solver")
+			return
 		}
 
 		// Determine if this was a bootstrap (start_architect with no context)
@@ -1028,6 +1028,40 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch) {
 			o.log("Error queuing start_solver: %v", err)
 		}
 	}
+}
+
+// snapshotQueueFiles returns a set of filenames currently in the queues directory.
+func (o *Orchestrator) snapshotQueueFiles() map[string]bool {
+	entries, err := os.ReadDir(o.queuesDir)
+	if err != nil {
+		return map[string]bool{}
+	}
+	files := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			files[e.Name()] = true
+		}
+	}
+	return files
+}
+
+// hasNewSolverRequestsFromArchitect checks if any new request_solution_change
+// queue files from the architect appeared since the pre-agent snapshot.
+func (o *Orchestrator) hasNewSolverRequestsFromArchitect(preSnapshot map[string]bool) bool {
+	reqs, paths, err := queue.ReadRequests(o.queuesDir, func(string, ...interface{}) {})
+	if err != nil {
+		return false
+	}
+	for i, req := range reqs {
+		filename := filepath.Base(paths[i])
+		if preSnapshot[filename] {
+			continue // existed before the agent started
+		}
+		if req.Request.Type == "request_solution_change" && req.Request.From == "architect" {
+			return true
+		}
+	}
+	return false
 }
 
 // gitCommandOutput runs a git command in the given directory and returns stdout.
@@ -1113,7 +1147,7 @@ func (o *Orchestrator) handleHandoffSolution() {
 	}
 }
 
-func (o *Orchestrator) handleConfirmSolution() {
+func (o *Orchestrator) handleConfirmSolution(item workItem) {
 	// 1. Copy evaluation/solution-deliverable/ to output/
 	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
 	// which writes to the same evaluator directory concurrently.
@@ -1130,11 +1164,18 @@ func (o *Orchestrator) handleConfirmSolution() {
 	}
 	o.copyMu[agent.Evaluator].Unlock()
 
+	// 2. Move confirm_solution request to completed (it has been processed)
+	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
+		o.log("Error marking confirm_solution completed: %v", err)
+	}
+	atomic.AddInt32(&o.completedCount, 1)
+
+	// 3. Log confirmation
 	o.log("========================================")
 	o.log("Solution confirmed and delivered!")
 	o.log("Output available in: output/")
 	o.log("========================================")
 
-	// 2. Signal orchestrator to shut down
+	// 4. Signal orchestrator to enter graceful shutdown
 	o.doneOnce.Do(func() { close(o.done) })
 }

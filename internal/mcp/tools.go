@@ -80,6 +80,20 @@ func ToolsForAgent(agentType agent.AgentType) []Tool {
 				},
 			},
 		}
+	case agent.Architect:
+		return []Tool{
+			{
+				Name:        "request_solution_change",
+				Description: "Describe architecture changes for the implementer to act on.",
+				InputSchema: InputSchema{
+					Type: "object",
+					Properties: map[string]Property{
+						"reason": {Type: "string", Description: "Description of the architecture changes for the implementer"},
+					},
+					Required: []string{"reason"},
+				},
+			},
+		}
 	}
 	return []Tool{}
 }
@@ -126,6 +140,19 @@ func HandlersForAgent(agentType agent.AgentType, queuesDir string) map[string]To
 				return ErrorResult("reason parameter is required")
 			}
 			_, err := queue.WriteRequest(queuesDir, "request_solution_change", "reviewer", reason)
+			if err != nil {
+				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
+			}
+			return TextResult("Solution change requested.")
+		}
+
+	case agent.Architect:
+		handlers["request_solution_change"] = func(args map[string]interface{}) ToolResult {
+			reason, ok := args["reason"].(string)
+			if !ok || reason == "" {
+				return ErrorResult("reason parameter is required")
+			}
+			_, err := queue.WriteRequest(queuesDir, "request_solution_change", "architect", reason)
 			if err != nil {
 				return ErrorResult(fmt.Sprintf("Failed to queue request: %v", err))
 			}

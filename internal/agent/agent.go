@@ -86,8 +86,15 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 		return fmt.Errorf("write settings.json: %w", err)
 	}
 
+	// Resolve absolute path to queues directory for MCP config
+	queuesDir := filepath.Join(opts.BaseDir, ".bobbi", "queues")
+	absQueuesDir, err := filepath.Abs(queuesDir)
+	if err != nil {
+		return fmt.Errorf("resolve queues dir: %w", err)
+	}
+
 	// Write MCP config to .bobbi/mcp-config-<agent-type>.json at the project root
-	mcpConfigContent := McpJSON(agentType, bobbiBin)
+	mcpConfigContent := McpJSON(agentType, bobbiBin, absQueuesDir)
 	mcpConfigDir := filepath.Join(opts.BaseDir, ".bobbi")
 	if err := os.MkdirAll(mcpConfigDir, 0755); err != nil {
 		return fmt.Errorf("create .bobbi dir for mcp config: %w", err)

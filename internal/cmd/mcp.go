@@ -12,19 +12,21 @@ import (
 
 func MCP(args []string) error {
 	var agentType string
+	var queuesDir string
 	for i, arg := range args {
 		if arg == "--agent" && i+1 < len(args) {
 			agentType = args[i+1]
-			break
-		}
-		if strings.HasPrefix(arg, "--agent=") {
+		} else if strings.HasPrefix(arg, "--agent=") {
 			agentType = strings.TrimPrefix(arg, "--agent=")
-			break
+		} else if arg == "--queues-dir" && i+1 < len(args) {
+			queuesDir = args[i+1]
+		} else if strings.HasPrefix(arg, "--queues-dir=") {
+			queuesDir = strings.TrimPrefix(arg, "--queues-dir=")
 		}
 	}
 
 	if agentType == "" {
-		return fmt.Errorf("usage: bobbi mcp --agent <solver|evaluator|architect|reviewer>")
+		return fmt.Errorf("usage: bobbi mcp --agent <solver|evaluator|architect|reviewer> --queues-dir <path>")
 	}
 
 	switch agentType {
@@ -34,9 +36,13 @@ func MCP(args []string) error {
 		return fmt.Errorf("unknown agent type: %s", agentType)
 	}
 
-	queuesDir, err := findQueuesDir()
-	if err != nil {
-		return fmt.Errorf("resolve queues directory: %w", err)
+	// Use explicit --queues-dir if provided; fall back to CWD-based discovery
+	if queuesDir == "" {
+		var err error
+		queuesDir, err = findQueuesDir()
+		if err != nil {
+			return fmt.Errorf("resolve queues directory: %w", err)
+		}
 	}
 
 	return mcpserver.Serve(agent.AgentType(agentType), queuesDir, os.Stdin, os.Stdout)

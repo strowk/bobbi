@@ -40,6 +40,7 @@ type Orchestrator struct {
 	baseDir      string
 	queuesDir    string
 	completedDir string
+	failedDir    string
 	userPrompt   string
 	rawMode      bool
 	NoSparklines bool
@@ -67,9 +68,10 @@ type Orchestrator struct {
 	logFile   *os.File
 	logFileMu sync.Mutex
 
-	// Retry tracking for failed agent starts (protected by retryMu)
+	// Retry tracking for pre-copy failures (protected by retryMu).
+	// Agent process failures use the YAML-based attempts field instead.
 	retryMu    sync.Mutex
-	retryCount map[string]int // requestPath -> retry count
+	retryCount map[string]int // requestPath -> pre-copy retry count
 
 	// Per-agent copy mutexes serialize all directory copy operations
 	// targeting a given agent's repository (prevents races between
@@ -80,6 +82,7 @@ type Orchestrator struct {
 	mu              sync.RWMutex
 	agentInfo       map[agent.AgentType]*AgentInfo
 	completedCount  int32 // atomic
+	failedCount     int32 // atomic
 	startTime       time.Time
 	sharedMaxTokens float64 // shared maximum for sparkline normalization
 }
@@ -109,6 +112,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		baseDir:      baseDir,
 		queuesDir:    filepath.Join(baseDir, ".bobbi", "queues"),
 		completedDir: filepath.Join(baseDir, ".bobbi", "completed"),
+		failedDir:    filepath.Join(baseDir, ".bobbi", "failed"),
 		userPrompt:   userPrompt,
 		rawMode:      rawMode,
 		NoSparklines: noSparklines,
@@ -174,6 +178,11 @@ func (o *Orchestrator) GetAgentInfo(at agent.AgentType) AgentInfo {
 // GetCompletedCount returns the number of completed requests.
 func (o *Orchestrator) GetCompletedCount() int {
 	return int(atomic.LoadInt32(&o.completedCount))
+}
+
+// GetFailedCount returns the number of failed requests.
+func (o *Orchestrator) GetFailedCount() int {
+	return int(atomic.LoadInt32(&o.failedCount))
 }
 
 // GetQueueDepth returns the number of files in the queues directory.
@@ -680,35 +689,46 @@ func mergeContextAttributed(items []workItem) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// handleBatchFailure applies retry/dead-letter logic for a failed batch. Items under
-// maxAgentRetries are un-dispatched for the next poll cycle; items that have exceeded
-// the limit are permanently marked as completed.
-func (o *Orchestrator) handleBatchFailure(batch workBatch, agentType agent.AgentType, reason string) {
+// handlePreCopyFailure handles retry logic for pre-copy failures. Since the agent
+// was never started, YAML attempts are not incremented. Uses in-memory retry tracking.
+func (o *Orchestrator) handlePreCopyFailure(batch workBatch, agentType agent.AgentType) {
 	o.retryMu.Lock()
-	var retryItems, deadItems []workItem
-	for _, item := range batch.items {
-		o.retryCount[item.requestPath]++
-		if o.retryCount[item.requestPath] >= maxAgentRetries {
-			deadItems = append(deadItems, item)
-			delete(o.retryCount, item.requestPath)
-		} else {
-			retryItems = append(retryItems, item)
-		}
+	key := batch.items[0].requestPath
+	o.retryCount[key]++
+	exhausted := o.retryCount[key] >= maxAgentRetries
+	if exhausted {
+		delete(o.retryCount, key)
 	}
 	o.retryMu.Unlock()
 
-	if len(retryItems) > 0 {
-		o.dispatchedMu.Lock()
-		for _, item := range retryItems {
-			delete(o.dispatched, item.requestPath)
-		}
-		o.dispatchedMu.Unlock()
-		o.log("Will retry %d item(s) for %s agent on next poll cycle (%s)", len(retryItems), agentType, reason)
+	if exhausted {
+		o.log("Pre-copy failed %d times for %s agent, giving up", maxAgentRetries, agentType)
+		o.markItemsFailed(batch.items)
+	} else {
+		o.log("Will retry %s agent on next poll cycle (pre-copy failed)", agentType)
+		o.unDispatchItems(batch.items)
 	}
-	if len(deadItems) > 0 {
-		o.log("Giving up on %d item(s) for %s agent after %d retries (%s)", len(deadItems), agentType, maxAgentRetries, reason)
-		o.markItemsCompleted(deadItems)
+}
+
+// handleAgentFailure handles retry logic for agent process failures (non-zero exit code).
+// Uses the YAML-based attempts field which was already incremented before starting the agent.
+func (o *Orchestrator) handleAgentFailure(batch workBatch, agentType agent.AgentType, attempts int) {
+	if attempts >= maxAgentRetries {
+		o.log("Giving up on %s agent after %d attempts", agentType, attempts)
+		o.markItemsFailed(batch.items)
+	} else {
+		o.log("Will retry %s agent (attempt %d/%d)", agentType, attempts, maxAgentRetries)
+		o.unDispatchItems(batch.items)
 	}
+}
+
+// unDispatchItems removes items from the dispatched set so they can be picked up again.
+func (o *Orchestrator) unDispatchItems(items []workItem) {
+	o.dispatchedMu.Lock()
+	for _, item := range items {
+		delete(o.dispatched, item.requestPath)
+	}
+	o.dispatchedMu.Unlock()
 }
 
 // markItemsCompleted moves all items' queue files to completed without processing.
@@ -722,6 +742,39 @@ func (o *Orchestrator) markItemsCompleted(items []workItem) {
 		delete(o.dispatched, item.requestPath)
 		o.dispatchedMu.Unlock()
 	}
+}
+
+// markItemsFailed moves all items' queue files to the failed directory.
+func (o *Orchestrator) markItemsFailed(items []workItem) {
+	for _, item := range items {
+		if err := queue.MarkFailed(item.requestPath, o.failedDir); err != nil {
+			o.log("Error marking failed: %v", err)
+		}
+		atomic.AddInt32(&o.failedCount, 1)
+		o.dispatchedMu.Lock()
+		delete(o.dispatched, item.requestPath)
+		o.dispatchedMu.Unlock()
+	}
+}
+
+// incrementBatchAttempts sets the attempts field for all items in the batch.
+// Returns the new attempts value (max of current attempts + 1).
+func (o *Orchestrator) incrementBatchAttempts(batch workBatch) int {
+	maxAttempts := 0
+	for _, item := range batch.items {
+		if item.request.Attempts > maxAttempts {
+			maxAttempts = item.request.Attempts
+		}
+	}
+	newAttempts := maxAttempts + 1
+
+	for _, item := range batch.items {
+		if err := queue.SetAttempts(item.requestPath, newAttempts); err != nil {
+			o.log("Error setting attempts for %s: %v", item.requestPath, err)
+		}
+	}
+
+	return newAttempts
 }
 
 // logWriter is an io.Writer that writes each line to the orchestrator log file.
@@ -759,9 +812,12 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	// Pre-agent: copy relevant content (once per batch)
 	if err := o.preCopy(agentType); err != nil {
 		o.log("Pre-copy failed for %s agent: %v", agentType, err)
-		o.handleBatchFailure(batch, agentType, "pre-copy failed")
+		o.handlePreCopyFailure(batch, agentType)
 		return
 	}
+
+	// Increment attempts for all items (agent is about to start)
+	batchAttempts := o.incrementBatchAttempts(batch)
 
 	// Determine the additional context for display priority
 	additionalCtx := batch.mergedContext
@@ -845,13 +901,13 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 
 	if agentErr != nil {
 		o.log("Agent %s error: %v", agentType, agentErr)
-		o.handleBatchFailure(batch, agentType, "agent failed")
+		o.handleAgentFailure(batch, agentType, batchAttempts)
 		return
 	}
 
 	o.log("Agent %s finished", agentType)
 
-	// Clear retry counts for successfully completed items
+	// Clear pre-copy retry counts for successfully completed items
 	o.retryMu.Lock()
 	for _, item := range batch.items {
 		delete(o.retryCount, item.requestPath)

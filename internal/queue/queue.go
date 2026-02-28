@@ -19,6 +19,7 @@ type RequestData struct {
 type Request struct {
 	Timestamp time.Time   `yaml:"timestamp"`
 	SessionID string      `yaml:"session_id,omitempty"`
+	Attempts  int         `yaml:"attempts,omitempty"`
 	Request   RequestData `yaml:"request"`
 }
 
@@ -161,6 +162,52 @@ func UpdateSessionID(requestPath, sessionID string) error {
 		}
 		return fmt.Errorf("write request file: %w", err)
 	}
+	return nil
+}
+
+// SetAttempts updates the attempts field in a request YAML file and clears
+// session_id so it can be re-captured from the new agent session.
+// If the file no longer exists (e.g., already moved), the update is skipped silently.
+func SetAttempts(requestPath string, attempts int) error {
+	data, err := os.ReadFile(requestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read request file: %w", err)
+	}
+	var req Request
+	if err := yaml.Unmarshal(data, &req); err != nil {
+		return fmt.Errorf("parse request file: %w", err)
+	}
+	req.Attempts = attempts
+	req.SessionID = "" // Clear for re-capture on new session
+	out, err := yaml.Marshal(&req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	if err := os.WriteFile(requestPath, out, 0644); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("write request file: %w", err)
+	}
+	return nil
+}
+
+// MarkFailed moves a request file from queues/ to the failed directory.
+func MarkFailed(requestPath, failedDir string) error {
+	if err := os.MkdirAll(failedDir, 0755); err != nil {
+		return fmt.Errorf("create failed dir: %w", err)
+	}
+
+	filename := filepath.Base(requestPath)
+	destPath := filepath.Join(failedDir, filename)
+
+	if err := os.Rename(requestPath, destPath); err != nil {
+		return fmt.Errorf("move request to failed: %w", err)
+	}
+
 	return nil
 }
 

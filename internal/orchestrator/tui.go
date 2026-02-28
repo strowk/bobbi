@@ -242,6 +242,7 @@ func (m TUIModel) viewMain() string {
 	elapsed := time.Since(m.orch.GetStartTime())
 	queueDepth := m.orch.GetQueueDepth()
 	completedCount := m.orch.GetCompletedCount()
+	failedCount := m.orch.GetFailedCount()
 	totalIn, totalOut := m.orch.GetTotalTokens()
 
 	boxStyle := lipgloss.NewStyle().
@@ -362,12 +363,14 @@ func (m TUIModel) viewMain() string {
 	// ── Footer ───────────────────────────────────────────
 	fLeft := lipgloss.NewStyle().Foreground(colorGreen).
 		Render(fmt.Sprintf("Completed: %d", completedCount))
+	fFailed := lipgloss.NewStyle().Foreground(colorAmber).
+		Render(fmt.Sprintf("Failed: %d", failedCount))
 	fMid := lipgloss.NewStyle().Foreground(colorDimGray).
 		Render(fmt.Sprintf("Tokens: %s in / %s out",
 			formatNumber(totalIn), formatNumber(totalOut)))
 	fRight := lipgloss.NewStyle().Foreground(colorGray).
 		Render("[↑↓ select, ⏎ detail]")
-	footer := boxStyle.Render(spaced(fLeft, fMid+" "+fRight, inner))
+	footer := boxStyle.Render(spaced(fLeft+" "+fFailed, fMid+" "+fRight, inner))
 
 	// ── Help ─────────────────────────────────────────────
 	help := lipgloss.NewStyle().Foreground(colorGray).Padding(0, 2).

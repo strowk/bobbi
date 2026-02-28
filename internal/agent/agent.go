@@ -102,7 +102,7 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 	}
 
 	cmd := exec.Command("claude",
-		"-p", "-",
+		"-p",
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",

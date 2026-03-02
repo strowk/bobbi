@@ -98,7 +98,12 @@ func Up(args []string) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- orch.Run(ctx)
+		err := orch.Run(ctx)
+		// Tell the TUI that the orchestrator has fully stopped (all agents
+		// finished). The TUI stays visible until this point so the user can
+		// see running agents wind down during graceful shutdown.
+		program.Send(orchestrator.OrchestratorDoneMsg{})
+		errCh <- err
 	}()
 
 	if _, err := program.Run(); err != nil {

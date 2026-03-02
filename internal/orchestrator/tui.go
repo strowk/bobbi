@@ -15,8 +15,9 @@ import (
 // tickMsg triggers periodic TUI refresh.
 type tickMsg time.Time
 
-// orchestratorDoneMsg signals the TUI that the orchestrator has finished.
-type orchestratorDoneMsg struct{}
+// OrchestratorDoneMsg signals the TUI that the orchestrator has fully stopped
+// (all agents finished, Run() returned). Exported so up.go can send it.
+type OrchestratorDoneMsg struct{}
 
 // Color palette.
 var (
@@ -42,6 +43,11 @@ type TUIModel struct {
 	width    int
 	height   int
 	quitting bool
+
+	// shuttingDown is true after confirm_solution (o.done closed) but before
+	// the orchestrator has fully stopped. The TUI stays visible during this
+	// phase so the user can see running agents finish.
+	shuttingDown bool
 
 	// Agent selection / navigation
 	selectedIdx int  // index into agentOrder
@@ -105,11 +111,16 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		select {
-		case <-m.orch.Done():
-			m.quitting = true
-			return m, tea.Quit
-		default:
+		// Check if the orchestrator has signalled confirm_solution (done).
+		// We do NOT quit here — the TUI stays visible so the user can see
+		// running agents finish. We quit only on OrchestratorDoneMsg which
+		// is sent after Run() fully returns.
+		if !m.shuttingDown {
+			select {
+			case <-m.orch.Done():
+				m.shuttingDown = true
+			default:
+			}
 		}
 		// In follow mode, snap to bottom
 		if m.detailView && m.followMode {
@@ -117,7 +128,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickCmd()
 
-	case orchestratorDoneMsg:
+	case OrchestratorDoneMsg:
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -252,8 +263,12 @@ func (m TUIModel) viewMain() string {
 		Width(w)
 
 	// ── Header ───────────────────────────────────────────
+	titleText := "BOBBI Orchestrator"
+	if m.shuttingDown {
+		titleText = "BOBBI Orchestrator — Shutting down..."
+	}
 	title := lipgloss.NewStyle().Bold(true).Foreground(colorPurple).
-		Render("BOBBI Orchestrator")
+		Render(titleText)
 	meta := lipgloss.NewStyle().Foreground(colorDimGray).
 		Render(fmt.Sprintf("%s   Queue: %d", formatDuration(elapsed), queueDepth))
 	header := boxStyle.Render(

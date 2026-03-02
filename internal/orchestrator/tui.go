@@ -56,6 +56,7 @@ type TUIModel struct {
 	// Detail view scrolling
 	detailOffset int  // scroll offset (lines from top)
 	followMode   bool // auto-scroll to bottom
+	wrapMode     bool // word wrap in detail view
 }
 
 // NewTUIModel creates a new TUI model.
@@ -172,6 +173,9 @@ func (m TUIModel) updateDetailView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.followMode {
 			m.snapToBottom()
 		}
+	case "w":
+		m.wrapMode = !m.wrapMode
+		m.clampDetailOffset()
 	case "up", "k":
 		m.followMode = false
 		if m.detailOffset > 0 {
@@ -196,8 +200,7 @@ func (m TUIModel) updateDetailView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *TUIModel) snapToBottom() {
-	ai := m.orch.GetAgentInfo(agentOrder[m.selectedIdx])
-	totalLines := len(ai.LogLines)
+	totalLines := m.detailTotalLines()
 	viewH := m.detailViewHeight()
 	if totalLines > viewH {
 		m.detailOffset = totalLines - viewH
@@ -207,8 +210,7 @@ func (m *TUIModel) snapToBottom() {
 }
 
 func (m *TUIModel) clampDetailOffset() {
-	ai := m.orch.GetAgentInfo(agentOrder[m.selectedIdx])
-	totalLines := len(ai.LogLines)
+	totalLines := m.detailTotalLines()
 	viewH := m.detailViewHeight()
 	maxOffset := totalLines - viewH
 	if maxOffset < 0 {
@@ -221,6 +223,75 @@ func (m *TUIModel) clampDetailOffset() {
 	if m.detailOffset >= maxOffset && maxOffset > 0 {
 		m.followMode = true
 	}
+}
+
+// detailTotalLines returns the total number of display lines for the current
+// detail view, accounting for prompt section, log section, and word wrapping.
+func (m *TUIModel) detailTotalLines() int {
+	return len(m.detailContentLines())
+}
+
+// detailContentLines builds the combined prompt + log content for the detail view.
+// When wrap mode is on, long lines are soft-wrapped at the inner width.
+func (m TUIModel) detailContentLines() []string {
+	w := m.width
+	if w < 60 {
+		w = 60
+	}
+	inner := w - 4
+
+	ai := m.orch.GetAgentInfo(agentOrder[m.selectedIdx])
+
+	var lines []string
+
+	// ── PROMPT section ──
+	if ai.Prompt != "" {
+		lines = append(lines, promptSeparator("PROMPT", inner))
+		promptLines := strings.Split(ai.Prompt, "\n")
+		if m.wrapMode {
+			for _, pl := range promptLines {
+				lines = append(lines, wrapLine(pl, inner)...)
+			}
+		} else {
+			lines = append(lines, promptLines...)
+		}
+	}
+
+	// ── LOG section ──
+	lines = append(lines, promptSeparator("LOG", inner))
+	if m.wrapMode {
+		for _, ll := range ai.LogLines {
+			lines = append(lines, wrapLine(ll, inner)...)
+		}
+	} else {
+		lines = append(lines, ai.LogLines...)
+	}
+
+	return lines
+}
+
+// promptSeparator returns a visual separator line like "── PROMPT ──────..."
+func promptSeparator(label string, width int) string {
+	prefix := "── " + label + " "
+	remaining := width - len(prefix)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return prefix + strings.Repeat("─", remaining)
+}
+
+// wrapLine soft-wraps a single line at the given width.
+func wrapLine(line string, width int) []string {
+	if width <= 0 || len(line) <= width {
+		return []string{line}
+	}
+	var result []string
+	for len(line) > width {
+		result = append(result, line[:width])
+		line = line[width:]
+	}
+	result = append(result, line)
+	return result
 }
 
 func (m TUIModel) detailViewHeight() int {
@@ -432,21 +503,28 @@ func (m TUIModel) viewDetail() string {
 		Render(fmt.Sprintf("%s in / %s out",
 			formatNumber(ai.InputTokens), formatNumber(ai.OutputTokens)))
 
-	var modeIndicator string
-	if m.followMode {
-		modeIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[FOLLOW]")
+	var wrapIndicator string
+	if m.wrapMode {
+		wrapIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[WRAP]")
 	} else {
-		modeIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[PAUSED]")
+		wrapIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorDimGray).Render("[NOWRAP]")
+	}
+
+	var followIndicator string
+	if m.followMode {
+		followIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).Render("[FOLLOW]")
+	} else {
+		followIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[PAUSED]")
 	}
 
 	headerLeft := nameStatus
-	headerRight := tokStr + "  " + modeIndicator
+	headerRight := tokStr + "  " + wrapIndicator + " " + followIndicator
 	header := boxStyle.Render(spaced(headerLeft, headerRight, inner))
 
-	// ── Log content ──────────────────────────────────────
+	// ── Content (prompt + log) ───────────────────────────
 	viewH := m.detailViewHeight()
-	lines := ai.LogLines
-	totalLines := len(lines)
+	allLines := m.detailContentLines()
+	totalLines := len(allLines)
 
 	// Determine visible range
 	startLine := m.detailOffset
@@ -460,8 +538,9 @@ func (m TUIModel) viewDetail() string {
 
 	var visibleLines []string
 	for i := startLine; i < endLine; i++ {
-		line := lines[i]
-		if len(line) > inner {
+		line := allLines[i]
+		// In no-wrap mode, truncate long lines
+		if !m.wrapMode && len(line) > inner {
 			line = line[:inner-3] + "..."
 		}
 		visibleLines = append(visibleLines, line)
@@ -481,7 +560,7 @@ func (m TUIModel) viewDetail() string {
 
 	// ── Footer ───────────────────────────────────────────
 	footerText := lipgloss.NewStyle().Foreground(colorGray).
-		Render("[Esc] back  [f] toggle follow  [↑↓/PgUp/PgDn] scroll")
+		Render("[Esc] back  [f] follow  [w] wrap  [↑↓/PgUp/PgDn] scroll")
 	footer := boxStyle.Render(footerText)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, logContent, footer)

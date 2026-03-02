@@ -36,8 +36,20 @@ type AgentInfo struct {
 	TotalToolUses     int    // cumulative tool uses across all runs
 	TotalToolFailures int    // cumulative tool use failures across all runs
 	HasRun            bool
-	LogLines          []string  // all extracted text lines from JSONL stream
-	SparklineData     []float64 // per-event total token values for sparkline
+	LogLines          []agent.LogLine // all extracted log lines from JSONL stream
+	SparklineData     []float64       // per-event total token values for sparkline
+}
+
+// logGroup represents a group of log lines from a single JSONL event, optionally tied to a message.id.
+type logGroup struct {
+	messageID string
+	lines     []agent.LogLine
+}
+
+// agentLogState tracks deduplication state for an agent's log output.
+type agentLogState struct {
+	groups       []logGroup
+	messageIndex map[string]int // message.id -> index in groups
 }
 
 // Orchestrator manages the lifecycle of agent processes.
@@ -86,8 +98,9 @@ type Orchestrator struct {
 	// State for TUI rendering (protected by mu)
 	mu              sync.RWMutex
 	agentInfo       map[agent.AgentType]*AgentInfo
-	completedCount  int32 // atomic
-	failedCount     int32 // atomic
+	logState        map[agent.AgentType]*agentLogState // deduplication state per agent
+	completedCount  int32                              // atomic
+	failedCount     int32                              // atomic
 	startTime       time.Time
 	sharedMaxTokens float64 // shared maximum for sparkline normalization
 }
@@ -109,9 +122,11 @@ type workBatch struct {
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool) *Orchestrator {
 	info := make(map[agent.AgentType]*AgentInfo)
 	cmu := make(map[agent.AgentType]*sync.Mutex)
+	ls := make(map[agent.AgentType]*agentLogState)
 	for _, at := range agent.AllTypes() {
 		info[at] = &AgentInfo{Status: "idle"}
 		cmu[at] = &sync.Mutex{}
+		ls[at] = &agentLogState{messageIndex: make(map[string]int)}
 	}
 	return &Orchestrator{
 		baseDir:      baseDir,
@@ -129,6 +144,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		shutdownCh:   make(chan struct{}),
 		copyMu:       cmu,
 		agentInfo:    info,
+		logState:     ls,
 	}
 }
 
@@ -168,7 +184,7 @@ func (o *Orchestrator) GetAgentInfo(at agent.AgentType) AgentInfo {
 		cp := *info
 		// Deep copy slices to avoid data races with concurrent appends.
 		if info.LogLines != nil {
-			cp.LogLines = make([]string, len(info.LogLines))
+			cp.LogLines = make([]agent.LogLine, len(info.LogLines))
 			copy(cp.LogLines, info.LogLines)
 		}
 		if info.SparklineData != nil {
@@ -821,6 +837,15 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// flattenLogGroups rebuilds the flattened LogLine slice from all log groups.
+func flattenLogGroups(groups []logGroup) []agent.LogLine {
+	var result []agent.LogLine
+	for _, g := range groups {
+		result = append(result, g.lines...)
+	}
+	return result
+}
+
 // processBatch runs a single agent session for a coalesced batch of work items.
 func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) {
 	if o.isShuttingDown() {
@@ -872,6 +897,8 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info.ToolFailures = 0
 	info.LogLines = nil
 	info.SparklineData = nil
+	// Reset deduplication state for new session
+	o.logState[agentType] = &agentLogState{messageIndex: make(map[string]int)}
 	o.mu.Unlock()
 
 	// Snapshot queue files before starting the architect, so we can detect
@@ -908,9 +935,21 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 			info.TotalToolFailures += failures
 			o.mu.Unlock()
 		},
-		OnText: func(text string) {
+		OnLogEntry: func(messageID string, lines []agent.LogLine) {
 			o.mu.Lock()
-			lines := strings.Split(text, "\n")
+			ls := o.logState[agentType]
+			if messageID != "" {
+				if idx, ok := ls.messageIndex[messageID]; ok {
+					// Replace existing entry (streaming dedup)
+					ls.groups[idx].lines = lines
+					// Rebuild flattened log
+					info.LogLines = flattenLogGroups(ls.groups)
+					o.mu.Unlock()
+					return
+				}
+				ls.messageIndex[messageID] = len(ls.groups)
+			}
+			ls.groups = append(ls.groups, logGroup{messageID: messageID, lines: lines})
 			info.LogLines = append(info.LogLines, lines...)
 			o.mu.Unlock()
 		},

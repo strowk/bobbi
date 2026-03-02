@@ -38,6 +38,22 @@ func RepoDir(agentType AgentType) string {
 	return string(agentType)
 }
 
+// LogLineType categorizes log lines for display styling.
+type LogLineType int
+
+const (
+	LogText      LogLineType = iota // Regular assistant text
+	LogToolUse                      // Tool call: ▶ ToolName summary
+	LogToolError                    // Tool error:   ✗ error message
+	LogThinking                     // Thinking block content
+)
+
+// LogLine represents a single line of extracted log content.
+type LogLine struct {
+	Type LogLineType
+	Text string
+}
+
 // StartOptions configures agent process I/O and callbacks.
 type StartOptions struct {
 	// BaseDir is the BOBBI project root directory (parent of agent repo dirs).
@@ -50,8 +66,9 @@ type StartOptions struct {
 	// OnToolUse is called for each tool_result block found in user events.
 	// total is the number of tool_result blocks in the event, failures is the count with is_error=true.
 	OnToolUse func(total, failures int)
-	// OnText is called with extracted text content from assistant and result JSONL events.
-	OnText func(text string)
+	// OnLogEntry is called with extracted log content from JSONL events.
+	// messageID is non-empty for assistant events (for deduplication); empty for user/result events.
+	OnLogEntry func(messageID string, lines []LogLine)
 	// OnSessionID is called once with the sessionId from the first JSONL event that contains one.
 	OnSessionID func(sessionID string)
 	// StdoutWriter receives all stdout lines. If nil, stdout is discarded.
@@ -150,7 +167,7 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 	done := make(chan struct{})
 	errCh := make(chan error, 1)
 
-	// Process stdout: parse JSONL for tokens, forward to writer
+	// Process stdout: parse JSONL, forward to writer
 	go func() {
 		defer close(done)
 		scanner := bufio.NewScanner(stdoutPipe)
@@ -158,21 +175,18 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 		sessionIDCaptured := false
 		for scanner.Scan() {
 			line := scanner.Text()
-			if opts.OnTokens != nil {
-				parseTokenUsage(line, opts.OnTokens)
-			}
-			if opts.OnToolUse != nil {
-				parseToolUse(line, opts.OnToolUse)
-			}
-			if opts.OnText != nil {
-				parseTextContent(line, opts.OnText)
-			}
-			if opts.OnSessionID != nil && !sessionIDCaptured {
-				if sid := parseSessionID(line); sid != "" {
+
+			var event claudeEvent
+			if json.Unmarshal([]byte(line), &event) == nil {
+				// Session ID capture
+				if opts.OnSessionID != nil && !sessionIDCaptured && event.SessionID != "" {
 					sessionIDCaptured = true
-					opts.OnSessionID(sid)
+					opts.OnSessionID(event.SessionID)
 				}
+				// Process event for tokens, tool use, and log content
+				processEvent(&event, opts)
 			}
+
 			if opts.StdoutWriter != nil {
 				fmt.Fprintln(opts.StdoutWriter, line)
 			}
@@ -215,6 +229,7 @@ type claudeEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionId"`
 	Message   *struct {
+		ID    string `json:"id"`
 		Usage *struct {
 			InputTokens              int64 `json:"input_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
@@ -228,46 +243,153 @@ type claudeEvent struct {
 	} `json:"result"`
 }
 
-// contentBlock represents a single content block from message.content or result.content arrays.
-type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+// fullContentBlock represents any content block type found in message.content arrays.
+type fullContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`       // text blocks
+	Thinking  string          `json:"thinking"`   // thinking blocks
+	Name      string          `json:"name"`       // tool_use blocks
+	BlockID   string          `json:"id"`         // tool_use blocks
+	Input     json.RawMessage `json:"input"`      // tool_use blocks
+	IsError   bool            `json:"is_error"`   // tool_result blocks
+	Content   json.RawMessage `json:"content"`    // tool_result blocks
+	ToolUseID string          `json:"tool_use_id"` // tool_result blocks
 }
 
-// toolResultBlock represents a tool_result content block found in user events.
-type toolResultBlock struct {
-	Type    string `json:"type"`
-	IsError bool   `json:"is_error"`
+// processEvent dispatches a parsed JSONL event to appropriate callbacks.
+func processEvent(event *claudeEvent, opts *StartOptions) {
+	switch event.Type {
+	case "assistant":
+		if event.Message == nil {
+			return
+		}
+		// Token usage
+		if opts.OnTokens != nil && event.Message.Usage != nil {
+			u := event.Message.Usage
+			input := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+			output := u.OutputTokens
+			if input > 0 || output > 0 {
+				opts.OnTokens(input, output)
+			}
+		}
+		// Log content extraction (text, tool_use, thinking)
+		if opts.OnLogEntry != nil && event.Message.Content != nil {
+			lines := extractAssistantLogLines(event.Message.Content)
+			if len(lines) > 0 {
+				messageID := ""
+				if event.Message.ID != "" {
+					messageID = event.Message.ID
+				}
+				opts.OnLogEntry(messageID, lines)
+			}
+		}
+
+	case "user":
+		if event.Message == nil || event.Message.Content == nil {
+			return
+		}
+		// Tool use counting
+		if opts.OnToolUse != nil {
+			countToolUses(event.Message.Content, opts.OnToolUse)
+		}
+		// Tool error extraction
+		if opts.OnLogEntry != nil {
+			errorLines := extractToolErrorLines(event.Message.Content)
+			if len(errorLines) > 0 {
+				opts.OnLogEntry("", errorLines)
+			}
+		}
+
+	case "result":
+		if opts.OnLogEntry != nil && event.Result != nil && event.Result.Content != nil {
+			lines := extractTextLogLines(event.Result.Content)
+			if len(lines) > 0 {
+				opts.OnLogEntry("", lines)
+			}
+		}
+	}
 }
 
-// parseTokenUsage extracts token usage from a JSONL line and calls onTokens if found.
-func parseTokenUsage(line string, onTokens func(input, output int64)) {
-	var event claudeEvent
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return
+// extractAssistantLogLines extracts log lines from assistant message content blocks.
+func extractAssistantLogLines(content json.RawMessage) []LogLine {
+	var blocks []fullContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil
 	}
-	if event.Type != "assistant" || event.Message == nil || event.Message.Usage == nil {
-		return
+	var lines []LogLine
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			if b.Text != "" {
+				for _, l := range strings.Split(b.Text, "\n") {
+					lines = append(lines, LogLine{Type: LogText, Text: l})
+				}
+			}
+		case "thinking":
+			if b.Thinking != "" {
+				for _, l := range strings.Split(b.Thinking, "\n") {
+					lines = append(lines, LogLine{Type: LogThinking, Text: l})
+				}
+			}
+		case "tool_use":
+			summary := formatToolUseSummary(b.Name, b.Input)
+			text := "\u25b6 " + b.Name
+			if summary != "" {
+				text += " " + summary
+			}
+			lines = append(lines, LogLine{Type: LogToolUse, Text: text})
+		}
 	}
-	u := event.Message.Usage
-	input := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
-	output := u.OutputTokens
-	if input > 0 || output > 0 {
-		onTokens(input, output)
-	}
+	return lines
 }
 
-// parseToolUse extracts tool use counts from a user JSONL event and calls onToolUse if any tool_result blocks are found.
-func parseToolUse(line string, onToolUse func(total, failures int)) {
-	var event claudeEvent
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return
+// extractToolErrorLines extracts error lines from user event tool_result blocks.
+func extractToolErrorLines(content json.RawMessage) []LogLine {
+	if content == nil {
+		return nil
 	}
-	if event.Type != "user" || event.Message == nil || event.Message.Content == nil {
-		return
+	var blocks []fullContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil
 	}
-	var blocks []toolResultBlock
-	if err := json.Unmarshal(event.Message.Content, &blocks); err != nil {
+	var lines []LogLine
+	for _, b := range blocks {
+		if b.Type == "tool_result" && b.IsError {
+			errorText := extractErrorText(b.Content)
+			firstLine := strings.SplitN(errorText, "\n", 2)[0]
+			if len(firstLine) > 120 {
+				firstLine = firstLine[:117] + "..."
+			}
+			lines = append(lines, LogLine{Type: LogToolError, Text: "  \u2717 " + firstLine})
+		}
+	}
+	return lines
+}
+
+// extractTextLogLines extracts text-only log lines from a content array (for result events).
+func extractTextLogLines(content json.RawMessage) []LogLine {
+	if content == nil {
+		return nil
+	}
+	var blocks []fullContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
+		return nil
+	}
+	var lines []LogLine
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			for _, l := range strings.Split(b.Text, "\n") {
+				lines = append(lines, LogLine{Type: LogText, Text: l})
+			}
+		}
+	}
+	return lines
+}
+
+// countToolUses counts tool_result blocks in a user event content array.
+func countToolUses(content json.RawMessage, onToolUse func(total, failures int)) {
+	var blocks []fullContentBlock
+	if err := json.Unmarshal(content, &blocks); err != nil {
 		return
 	}
 	total := 0
@@ -285,56 +407,138 @@ func parseToolUse(line string, onToolUse func(total, failures int)) {
 	}
 }
 
-// extractTextFromContent extracts text from a JSON content array (message.content or result.content).
-func extractTextFromContent(raw json.RawMessage) string {
-	if raw == nil {
+// extractErrorText extracts text from a tool_result content field (string or array of text blocks).
+func extractErrorText(content json.RawMessage) string {
+	if content == nil {
 		return ""
 	}
-	var blocks []contentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
+	// Try string first
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
 	}
-	var texts []string
-	for _, b := range blocks {
-		if b.Type == "text" && b.Text != "" {
-			texts = append(texts, b.Text)
+	// Try array of content blocks
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &blocks); err == nil {
+		var texts []string
+		for _, b := range blocks {
+			if b.Text != "" {
+				texts = append(texts, b.Text)
+			}
 		}
+		return strings.Join(texts, "")
 	}
-	return strings.Join(texts, "\n")
+	return ""
 }
 
-// parseSessionID extracts the sessionId from a JSONL line, returning it if non-empty.
-func parseSessionID(line string) string {
-	var event claudeEvent
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
+// formatToolUseSummary creates a compact input summary for a tool_use block.
+func formatToolUseSummary(name string, input json.RawMessage) string {
+	if input == nil {
 		return ""
 	}
-	return event.SessionID
+	var inputMap map[string]json.RawMessage
+	if err := json.Unmarshal(input, &inputMap); err != nil {
+		return ""
+	}
+
+	switch name {
+	case "Read", "Write", "Edit":
+		if fp, ok := inputMap["file_path"]; ok {
+			var path string
+			if json.Unmarshal(fp, &path) == nil {
+				return ShortenPath(path)
+			}
+		}
+	case "Bash":
+		if cmd, ok := inputMap["command"]; ok {
+			var command string
+			if json.Unmarshal(cmd, &command) == nil {
+				if len(command) > 80 {
+					command = command[:77] + "..."
+				}
+				return command
+			}
+		}
+	case "Grep":
+		var result string
+		if pat, ok := inputMap["pattern"]; ok {
+			var pattern string
+			if json.Unmarshal(pat, &pattern) == nil {
+				result = fmt.Sprintf(`"%s"`, pattern)
+			}
+		}
+		if p, ok := inputMap["path"]; ok {
+			var path string
+			if json.Unmarshal(p, &path) == nil {
+				result += " in " + path
+			}
+		}
+		return result
+	case "Glob":
+		if pat, ok := inputMap["pattern"]; ok {
+			var pattern string
+			if json.Unmarshal(pat, &pattern) == nil {
+				return pattern
+			}
+		}
+	case "Task":
+		var result string
+		if desc, ok := inputMap["description"]; ok {
+			var description string
+			if json.Unmarshal(desc, &description) == nil {
+				result = fmt.Sprintf(`"%s"`, description)
+			}
+		}
+		if st, ok := inputMap["subagent_type"]; ok {
+			var subagentType string
+			if json.Unmarshal(st, &subagentType) == nil {
+				result += fmt.Sprintf(" (%s)", subagentType)
+			}
+		}
+		return result
+	case "WebFetch":
+		if u, ok := inputMap["url"]; ok {
+			var url string
+			if json.Unmarshal(u, &url) == nil {
+				if len(url) > 60 {
+					url = url[:57] + "..."
+				}
+				return url
+			}
+		}
+	case "WebSearch":
+		if q, ok := inputMap["query"]; ok {
+			var query string
+			if json.Unmarshal(q, &query) == nil {
+				if len(query) > 60 {
+					query = query[:57] + "..."
+				}
+				return fmt.Sprintf(`"%s"`, query)
+			}
+		}
+	}
+	return ""
 }
 
-// parseTextContent extracts text content from a JSONL line and calls onText if found.
-// It handles "assistant" events (message.content) and "result" events (result.content).
-func parseTextContent(line string, onText func(string)) {
-	var event claudeEvent
-	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return
-	}
-	var text string
-	switch event.Type {
-	case "assistant":
-		if event.Message != nil {
-			text = extractTextFromContent(event.Message.Content)
+// ShortenPath shortens a file path to show only the last 3 segments with …/ prefix.
+func ShortenPath(path string) string {
+	// Normalize to forward slashes
+	path = strings.ReplaceAll(path, `\`, "/")
+	segments := strings.Split(path, "/")
+	// Remove empty segments
+	var clean []string
+	for _, s := range segments {
+		if s != "" {
+			clean = append(clean, s)
 		}
-	case "result":
-		if event.Result != nil {
-			text = extractTextFromContent(event.Result.Content)
-		}
-	default:
-		return
 	}
-	if text != "" {
-		onText(text)
+	if len(clean) > 3 {
+		return "\u2026/" + strings.Join(clean[len(clean)-3:], "/")
 	}
+	return path
 }
 
 // BuildPrompt returns the task prompt for an agent given a request type, context, and item count.

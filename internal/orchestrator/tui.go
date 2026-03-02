@@ -26,6 +26,7 @@ var (
 	colorCyan      = lipgloss.Color("#06B6D4")
 	colorGreen     = lipgloss.Color("#10B981")
 	colorAmber     = lipgloss.Color("#F59E0B")
+	colorRed       = lipgloss.Color("#EF4444")
 	colorGray      = lipgloss.Color("#6B7280")
 	colorDimGray   = lipgloss.Color("#9CA3AF")
 	colorLightGray = lipgloss.Color("#D1D5DB")
@@ -36,6 +37,12 @@ var agentOrder = []agent.AgentType{agent.Architect, agent.Solver, agent.Evaluato
 
 // sparklineWidth is the fixed number of bars in each sparkline.
 const sparklineWidth = 20
+
+// detailLine holds a line of content and its type for styling in the detail view.
+type detailLine struct {
+	text     string
+	lineType agent.LogLineType // agent.LogText for normal/prompt text
+}
 
 // TUIModel is the BubbleTea model for the BOBBI terminal UI.
 type TUIModel struct {
@@ -55,9 +62,10 @@ type TUIModel struct {
 	detailView  bool // whether the detail view is open
 
 	// Detail view scrolling
-	detailOffset int  // scroll offset (lines from top)
-	followMode   bool // auto-scroll to bottom
-	wrapMode     bool // word wrap in detail view
+	detailOffset  int  // scroll offset (lines from top)
+	followMode    bool // auto-scroll to bottom
+	wrapMode      bool // word wrap in detail view
+	thinkingMode  bool // show thinking blocks in detail view
 }
 
 // NewTUIModel creates a new TUI model.
@@ -177,6 +185,9 @@ func (m TUIModel) updateDetailView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "w":
 		m.wrapMode = !m.wrapMode
 		m.clampDetailOffset()
+	case "t":
+		m.thinkingMode = !m.thinkingMode
+		m.clampDetailOffset()
 	case "up", "k":
 		m.followMode = false
 		if m.detailOffset > 0 {
@@ -233,8 +244,9 @@ func (m *TUIModel) detailTotalLines() int {
 }
 
 // detailContentLines builds the combined prompt + log content for the detail view.
-// When wrap mode is on, long lines are soft-wrapped at the inner width.
-func (m TUIModel) detailContentLines() []string {
+// Returns detailLine entries with type info for styling. When wrap mode is on,
+// long lines are soft-wrapped at the inner width.
+func (m TUIModel) detailContentLines() []detailLine {
 	w := m.width
 	if w < 60 {
 		w = 60
@@ -243,29 +255,39 @@ func (m TUIModel) detailContentLines() []string {
 
 	ai := m.orch.GetAgentInfo(agentOrder[m.selectedIdx])
 
-	var lines []string
+	var lines []detailLine
 
 	// ── PROMPT section ──
 	if ai.Prompt != "" {
-		lines = append(lines, promptSeparator("PROMPT", inner))
+		lines = append(lines, detailLine{promptSeparator("PROMPT", inner), agent.LogText})
 		promptLines := strings.Split(ai.Prompt, "\n")
 		if m.wrapMode {
 			for _, pl := range promptLines {
-				lines = append(lines, wrapLine(pl, inner)...)
+				for _, wl := range wrapLine(pl, inner) {
+					lines = append(lines, detailLine{wl, agent.LogText})
+				}
 			}
 		} else {
-			lines = append(lines, promptLines...)
+			for _, pl := range promptLines {
+				lines = append(lines, detailLine{pl, agent.LogText})
+			}
 		}
 	}
 
 	// ── LOG section ──
-	lines = append(lines, promptSeparator("LOG", inner))
-	if m.wrapMode {
-		for _, ll := range ai.LogLines {
-			lines = append(lines, wrapLine(ll, inner)...)
+	lines = append(lines, detailLine{promptSeparator("LOG", inner), agent.LogText})
+	for _, ll := range ai.LogLines {
+		// Filter thinking lines based on toggle
+		if ll.Type == agent.LogThinking && !m.thinkingMode {
+			continue
 		}
-	} else {
-		lines = append(lines, ai.LogLines...)
+		if m.wrapMode {
+			for _, wl := range wrapLine(ll.Text, inner) {
+				lines = append(lines, detailLine{wl, ll.Type})
+			}
+		} else {
+			lines = append(lines, detailLine{ll.Text, ll.Type})
+		}
 	}
 
 	return lines
@@ -492,9 +514,10 @@ func (m TUIModel) viewMain() string {
 			}
 			rows = append(rows, lipgloss.NewStyle().Foreground(colorDimGray).Italic(true).Render(summary))
 
-			// Log preview: last 2 non-empty lines
-			previewLines := lastNonEmptyLines(ai.LogLines, 2)
-			for _, line := range previewLines {
+			// Log preview: last 2 non-empty lines (excluding thinking)
+			previewLines := lastNonEmptyLogLines(ai.LogLines, 2)
+			for _, ll := range previewLines {
+				line := ll.Text
 				if len(line) > inner-6 {
 					line = line[:inner-9] + "..."
 				}
@@ -579,8 +602,14 @@ func (m TUIModel) viewDetail() string {
 		followIndicator = lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[PAUSED]")
 	}
 
+	indicators := wrapIndicator + " " + followIndicator
+	if m.thinkingMode {
+		thinkIndicator := lipgloss.NewStyle().Bold(true).Foreground(colorAmber).Render("[THINK]")
+		indicators = thinkIndicator + " " + indicators
+	}
+
 	headerLeft := nameStatus
-	headerRight := tokStr + "  " + wrapIndicator + " " + followIndicator
+	headerRight := tokStr + "  " + indicators
 	header := boxStyle.Render(spaced(headerLeft, headerRight, inner))
 
 	// ── Content (prompt + log) ───────────────────────────
@@ -600,10 +629,20 @@ func (m TUIModel) viewDetail() string {
 
 	var visibleLines []string
 	for i := startLine; i < endLine; i++ {
-		line := allLines[i]
+		dl := allLines[i]
+		line := dl.text
 		// In no-wrap mode, truncate long lines
 		if !m.wrapMode && len(line) > inner {
 			line = line[:inner-3] + "..."
+		}
+		// Apply styling based on line type
+		switch dl.lineType {
+		case agent.LogToolUse:
+			line = lipgloss.NewStyle().Foreground(colorCyan).Render(line)
+		case agent.LogToolError:
+			line = lipgloss.NewStyle().Foreground(colorRed).Render(line)
+		case agent.LogThinking:
+			line = lipgloss.NewStyle().Foreground(colorGray).Italic(true).Render(line)
 		}
 		visibleLines = append(visibleLines, line)
 	}
@@ -622,7 +661,7 @@ func (m TUIModel) viewDetail() string {
 
 	// ── Footer ───────────────────────────────────────────
 	footerText := lipgloss.NewStyle().Foreground(colorGray).
-		Render("[Esc] back  [f] follow  [w] wrap  [↑↓/PgUp/PgDn] scroll")
+		Render("[Esc] back  [f] follow  [w] wrap  [t] thinking  [↑↓/PgUp/PgDn] scroll")
 	footer := boxStyle.Render(footerText)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, logContent, footer)
@@ -665,13 +704,17 @@ func requestBadge(requestType string) string {
 	return "[start]"
 }
 
-// lastNonEmptyLines returns the last n non-empty lines from a slice.
-func lastNonEmptyLines(lines []string, n int) []string {
-	var result []string
+// lastNonEmptyLogLines returns the last n non-empty log lines, excluding thinking lines.
+func lastNonEmptyLogLines(lines []agent.LogLine, n int) []agent.LogLine {
+	var result []agent.LogLine
 	for i := len(lines) - 1; i >= 0 && len(result) < n; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		// Skip thinking lines (never shown in preview)
+		if lines[i].Type == agent.LogThinking {
+			continue
+		}
+		trimmed := strings.TrimSpace(lines[i].Text)
 		if trimmed != "" {
-			result = append([]string{trimmed}, result...)
+			result = append([]agent.LogLine{{Type: lines[i].Type, Text: trimmed}}, result...)
 		}
 	}
 	return result
@@ -714,4 +757,3 @@ func formatNumber(n int64) string {
 	}
 	return prefix + string(result)
 }
-

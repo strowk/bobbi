@@ -31,6 +31,10 @@ type AgentInfo struct {
 	OutputTokens      int64  // tokens for the current/latest run
 	TotalInputTokens  int64  // cumulative tokens across all runs
 	TotalOutputTokens int64  // cumulative tokens across all runs
+	ToolUses          int    // total tool uses for the current/latest run
+	ToolFailures      int    // tool use failures for the current/latest run
+	TotalToolUses     int    // cumulative tool uses across all runs
+	TotalToolFailures int    // cumulative tool use failures across all runs
 	HasRun            bool
 	LogLines          []string  // all extracted text lines from JSONL stream
 	SparklineData     []float64 // per-event total token values for sparkline
@@ -218,6 +222,18 @@ func (o *Orchestrator) GetTotalTokens() (int64, int64) {
 		totalOut += info.TotalOutputTokens
 	}
 	return totalIn, totalOut
+}
+
+// GetTotalToolUses returns aggregate cumulative tool use counts across all agents.
+func (o *Orchestrator) GetTotalToolUses() (int, int) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var totalUses, totalFailures int
+	for _, info := range o.agentInfo {
+		totalUses += info.TotalToolUses
+		totalFailures += info.TotalToolFailures
+	}
+	return totalUses, totalFailures
 }
 
 // Done returns a channel that is closed when the orchestrator is done.
@@ -852,6 +868,8 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info.AdditionalContext = additionalCtx
 	info.InputTokens = 0
 	info.OutputTokens = 0
+	info.ToolUses = 0
+	info.ToolFailures = 0
 	info.LogLines = nil
 	info.SparklineData = nil
 	o.mu.Unlock()
@@ -880,6 +898,14 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 			if eventTotal > o.sharedMaxTokens {
 				o.sharedMaxTokens = eventTotal
 			}
+			o.mu.Unlock()
+		},
+		OnToolUse: func(total, failures int) {
+			o.mu.Lock()
+			info.ToolUses += total
+			info.ToolFailures += failures
+			info.TotalToolUses += total
+			info.TotalToolFailures += failures
 			o.mu.Unlock()
 		},
 		OnText: func(text string) {

@@ -47,6 +47,9 @@ type StartOptions struct {
 	// input = input_tokens + cache_creation_input_tokens + cache_read_input_tokens
 	// output = output_tokens
 	OnTokens func(input, output int64)
+	// OnToolUse is called for each tool_result block found in user events.
+	// total is the number of tool_result blocks in the event, failures is the count with is_error=true.
+	OnToolUse func(total, failures int)
 	// OnText is called with extracted text content from assistant and result JSONL events.
 	OnText func(text string)
 	// OnSessionID is called once with the sessionId from the first JSONL event that contains one.
@@ -158,6 +161,9 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 			if opts.OnTokens != nil {
 				parseTokenUsage(line, opts.OnTokens)
 			}
+			if opts.OnToolUse != nil {
+				parseToolUse(line, opts.OnToolUse)
+			}
 			if opts.OnText != nil {
 				parseTextContent(line, opts.OnText)
 			}
@@ -228,6 +234,12 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
+// toolResultBlock represents a tool_result content block found in user events.
+type toolResultBlock struct {
+	Type    string `json:"type"`
+	IsError bool   `json:"is_error"`
+}
+
 // parseTokenUsage extracts token usage from a JSONL line and calls onTokens if found.
 func parseTokenUsage(line string, onTokens func(input, output int64)) {
 	var event claudeEvent
@@ -242,6 +254,34 @@ func parseTokenUsage(line string, onTokens func(input, output int64)) {
 	output := u.OutputTokens
 	if input > 0 || output > 0 {
 		onTokens(input, output)
+	}
+}
+
+// parseToolUse extracts tool use counts from a user JSONL event and calls onToolUse if any tool_result blocks are found.
+func parseToolUse(line string, onToolUse func(total, failures int)) {
+	var event claudeEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
+	}
+	if event.Type != "user" || event.Message == nil || event.Message.Content == nil {
+		return
+	}
+	var blocks []toolResultBlock
+	if err := json.Unmarshal(event.Message.Content, &blocks); err != nil {
+		return
+	}
+	total := 0
+	failures := 0
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			total++
+			if b.IsError {
+				failures++
+			}
+		}
+	}
+	if total > 0 {
+		onToolUse(total, failures)
 	}
 }
 

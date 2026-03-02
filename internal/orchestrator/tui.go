@@ -380,13 +380,15 @@ func (m TUIModel) viewMain() string {
 		spaced(title, meta, inner),
 	)
 
+	totalToolUses, totalToolFailures := m.orch.GetTotalToolUses()
+
 	// ── Agent table ──────────────────────────────────────
 	showSparklines := !m.orch.NoSparklines
 	var colHdrText string
 	if showSparklines {
-		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %-22s %s", "Agent", "Status", "Session", "Activity", "Tokens (in / out)")
+		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %-22s %-18s %s", "Agent", "Status", "Session", "Activity", "Tools", "Tokens (in / out)")
 	} else {
-		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %s", "Agent", "Status", "Session", "Tokens (in / out)")
+		colHdrText = fmt.Sprintf("  %-12s %-12s %-10s %-18s %s", "Agent", "Status", "Session", "Tools", "Tokens (in / out)")
 	}
 	colHdr := lipgloss.NewStyle().Bold(true).Foreground(colorLightGray).Render(colHdrText)
 	sep := lipgloss.NewStyle().Foreground(colorGray).
@@ -433,6 +435,18 @@ func (m TUIModel) viewMain() string {
 		session := lipgloss.NewStyle().Foreground(colorDimGray).
 			Render(fmt.Sprintf("%-10s", sessionStr))
 
+		// Tool use counter
+		toolStr := lipgloss.NewStyle().Foreground(colorGray).Render(fmt.Sprintf("%-18s", "tools: —"))
+		if ai.HasRun || ai.ToolUses > 0 {
+			if ai.ToolFailures > 0 {
+				toolStr = lipgloss.NewStyle().Foreground(colorDimGray).
+					Render(fmt.Sprintf("%-18s", fmt.Sprintf("tools: %d (%d err)", ai.ToolUses, ai.ToolFailures)))
+			} else {
+				toolStr = lipgloss.NewStyle().Foreground(colorDimGray).
+					Render(fmt.Sprintf("%-18s", fmt.Sprintf("tools: %d", ai.ToolUses)))
+			}
+		}
+
 		tok := lipgloss.NewStyle().Foreground(colorGray).Render("— / —")
 		if ai.HasRun || ai.InputTokens > 0 || ai.OutputTokens > 0 {
 			tok = lipgloss.NewStyle().Foreground(colorDimGray).
@@ -443,9 +457,9 @@ func (m TUIModel) viewMain() string {
 		var row string
 		if showSparklines {
 			sparkStr := renderSparkline(ai.SparklineData, sharedMax)
-			row = fmt.Sprintf("%s%s %s %s %-22s %s", indicator, name, status, session, sparkStr, tok)
+			row = fmt.Sprintf("%s%s %s %s %-22s %s %s", indicator, name, status, session, sparkStr, toolStr, tok)
 		} else {
-			row = fmt.Sprintf("%s%s %s %s %s", indicator, name, status, session, tok)
+			row = fmt.Sprintf("%s%s %s %s %s %s", indicator, name, status, session, toolStr, tok)
 		}
 
 		// Highlight selected row
@@ -497,12 +511,20 @@ func (m TUIModel) viewMain() string {
 		Render(fmt.Sprintf("Completed: %d", completedCount))
 	fFailed := lipgloss.NewStyle().Foreground(colorAmber).
 		Render(fmt.Sprintf("Failed: %d", failedCount))
+	var fTools string
+	if totalToolFailures > 0 {
+		fTools = lipgloss.NewStyle().Foreground(colorDimGray).
+			Render(fmt.Sprintf("Tools: %d (%d err)", totalToolUses, totalToolFailures))
+	} else {
+		fTools = lipgloss.NewStyle().Foreground(colorDimGray).
+			Render(fmt.Sprintf("Tools: %d", totalToolUses))
+	}
 	fMid := lipgloss.NewStyle().Foreground(colorDimGray).
 		Render(fmt.Sprintf("Tokens: %s in / %s out",
 			formatNumber(totalIn), formatNumber(totalOut)))
 	fRight := lipgloss.NewStyle().Foreground(colorGray).
-		Render("[↑↓ select, ⏎ detail]")
-	footer := boxStyle.Render(spaced(fLeft+" "+fFailed, fMid+" "+fRight, inner))
+		Render("[↑↓, ⏎]")
+	footer := boxStyle.Render(spaced(fLeft+" "+fFailed+" "+fTools, fMid+" "+fRight, inner))
 
 	// ── Help ─────────────────────────────────────────────
 	help := lipgloss.NewStyle().Foreground(colorGray).Padding(0, 2).
@@ -533,9 +555,15 @@ func (m TUIModel) viewDetail() string {
 	// ── Header ───────────────────────────────────────────
 	nameStatus := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).
 		Render(fmt.Sprintf("%s [%s]", at, ai.Status))
+	var detailToolStr string
+	if ai.ToolFailures > 0 {
+		detailToolStr = fmt.Sprintf("tools: %d (%d err)", ai.ToolUses, ai.ToolFailures)
+	} else {
+		detailToolStr = fmt.Sprintf("tools: %d", ai.ToolUses)
+	}
 	tokStr := lipgloss.NewStyle().Foreground(colorDimGray).
-		Render(fmt.Sprintf("%s in / %s out",
-			formatNumber(ai.InputTokens), formatNumber(ai.OutputTokens)))
+		Render(fmt.Sprintf("%s  %s in / %s out",
+			detailToolStr, formatNumber(ai.InputTokens), formatNumber(ai.OutputTokens)))
 
 	var wrapIndicator string
 	if m.wrapMode {

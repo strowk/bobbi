@@ -295,8 +295,8 @@ func wrapLine(line string, width int) []string {
 }
 
 func (m TUIModel) detailViewHeight() int {
-	// Total height minus header (3 lines), footer (2 lines), and some padding
-	h := m.height - 6
+	// Header box (3) + log content box borders (2) + footer box (3) = 8 lines of chrome
+	h := m.height - 8
 	if h < 1 {
 		h = 1
 	}
@@ -308,10 +308,27 @@ func (m TUIModel) View() string {
 		return ""
 	}
 
+	var output string
 	if m.detailView {
-		return m.viewDetail()
+		output = m.viewDetail()
+	} else {
+		output = m.viewMain()
 	}
-	return m.viewMain()
+	return padToHeight(output, m.height)
+}
+
+// padToHeight ensures the output has exactly `height` lines, padding with
+// empty lines or truncating as needed. This prevents rendering artifacts when
+// switching between views or when content doesn't fill the terminal.
+func padToHeight(s string, height int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m TUIModel) viewMain() string {

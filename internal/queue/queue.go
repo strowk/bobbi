@@ -181,10 +181,7 @@ func SetAttempts(requestPath string, attempts int) error {
 		return fmt.Errorf("parse request file: %w", err)
 	}
 	req.Attempts = attempts
-	// Note: session_id is not cleared here. The OnSessionID callback
-	// will overwrite it when the new session starts streaming. If the
-	// agent crashes before producing output, the previous session_id
-	// is preserved (still useful for debugging).
+	req.SessionID = ""
 	out, err := yaml.Marshal(&req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)

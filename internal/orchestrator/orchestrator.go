@@ -463,9 +463,41 @@ func (o *Orchestrator) poll() {
 
 // handleDirectRequest runs a direct handler (handoff/confirm) in a goroutine,
 // completing the request and cleaning up the dispatched entry when done.
-func (o *Orchestrator) handleDirectRequest(item workItem, handler func()) {
+// If the handler returns an error, the request is retried using in-memory
+// retry tracking (similar to handlePreCopyFailure) or moved to failed/.
+func (o *Orchestrator) handleDirectRequest(item workItem, handler func() error) {
 	defer o.wg.Done()
-	handler()
+	if err := handler(); err != nil {
+		o.log("Direct request handler failed: %v", err)
+
+		o.retryMu.Lock()
+		o.retryCount[item.requestPath]++
+		exhausted := o.retryCount[item.requestPath] >= maxAgentRetries
+		if exhausted {
+			delete(o.retryCount, item.requestPath)
+		}
+		o.retryMu.Unlock()
+
+		if exhausted {
+			o.log("Handoff failed %d times, giving up", maxAgentRetries)
+			if err := queue.MarkFailed(item.requestPath, o.failedDir); err != nil {
+				o.log("Error marking failed: %v", err)
+			}
+			atomic.AddInt32(&o.failedCount, 1)
+		} else {
+			o.log("Will retry handoff on next poll cycle")
+		}
+		o.dispatchedMu.Lock()
+		delete(o.dispatched, item.requestPath)
+		o.dispatchedMu.Unlock()
+		return
+	}
+
+	// Success — clean up retry count and mark completed
+	o.retryMu.Lock()
+	delete(o.retryCount, item.requestPath)
+	o.retryMu.Unlock()
+
 	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
 		o.log("Error marking completed: %v", err)
 	}
@@ -1076,7 +1108,7 @@ func gitCommandOutput(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-func (o *Orchestrator) handleHandoffSolution() {
+func (o *Orchestrator) handleHandoffSolution() error {
 	solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 	copyFailed := false
@@ -1151,18 +1183,20 @@ func (o *Orchestrator) handleHandoffSolution() {
 		}
 	}()
 
-	if !copyFailed {
-		// 5. Enqueue start_evaluator
-		if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
-			o.log("Error queuing start_evaluator: %v", err)
-		}
-		// 6. Enqueue start_reviewer
-		if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
-			o.log("Error queuing start_reviewer: %v", err)
-		}
-	} else {
+	if copyFailed {
 		o.log("Skipping start_evaluator/start_reviewer due to copy failures during handoff")
+		return fmt.Errorf("copy operations failed during handoff")
 	}
+
+	// 5. Enqueue start_evaluator
+	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
+		o.log("Error queuing start_evaluator: %v", err)
+	}
+	// 6. Enqueue start_reviewer
+	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
+		o.log("Error queuing start_reviewer: %v", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) handleConfirmSolution(item workItem) {

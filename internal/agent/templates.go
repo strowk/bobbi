@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -136,15 +137,22 @@ func McpJSON(agentType AgentType, bobbiBin string, queuesDir string) string {
 	// Normalize to forward slashes so the command path is valid JSON on Windows
 	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 	queuesDir = strings.ReplaceAll(queuesDir, `\`, "/")
+
+	// Use json.Marshal for string values to ensure valid JSON escaping
+	// (Go's %q can produce escape sequences like \a or \v that are not valid in JSON)
+	cmdJSON, _ := json.Marshal(bobbiBin)
+	agentJSON, _ := json.Marshal(string(agentType))
+	queuesJSON, _ := json.Marshal(queuesDir)
+
 	return fmt.Sprintf(`{
   "mcpServers": {
     "bobbi": {
       "type": "stdio",
-      "command": %q,
-      "args": ["mcp", "--agent", %q, "--queues-dir", %q]
+      "command": %s,
+      "args": ["mcp", "--agent", %s, "--queues-dir", %s]
     }
   }
-}`, bobbiBin, string(agentType), queuesDir)
+}`, string(cmdJSON), string(agentJSON), string(queuesJSON))
 }
 
 func GitIgnore(agentType AgentType) string {

@@ -10,6 +10,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/sparkline"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // tickMsg triggers periodic TUI refresh.
@@ -280,15 +281,31 @@ func promptSeparator(label string, width int) string {
 	return prefix + strings.Repeat("─", remaining)
 }
 
-// wrapLine soft-wraps a single line at the given width.
+// wrapLine soft-wraps a single line at the given display width.
+// Uses runewidth for accurate display-width calculation with multi-byte
+// and double-width Unicode characters.
 func wrapLine(line string, width int) []string {
-	if width <= 0 || len(line) <= width {
+	if width <= 0 || runewidth.StringWidth(line) <= width {
 		return []string{line}
 	}
 	var result []string
-	for len(line) > width {
-		result = append(result, line[:width])
-		line = line[width:]
+	for runewidth.StringWidth(line) > width {
+		w := 0
+		pos := 0
+		for i, r := range line {
+			rw := runewidth.RuneWidth(r)
+			if w+rw > width {
+				pos = i
+				break
+			}
+			w += rw
+			pos = i + len(string(r))
+		}
+		if pos == 0 {
+			break
+		}
+		result = append(result, line[:pos])
+		line = line[pos:]
 	}
 	result = append(result, line)
 	return result

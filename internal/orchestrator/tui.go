@@ -359,7 +359,7 @@ func (m TUIModel) viewMain() string {
 			}
 			displayText = strings.ReplaceAll(displayText, "\n", " ")
 
-			summaryPrefix := fmt.Sprintf("%s %s: ", at, badge)
+			summaryPrefix := fmt.Sprintf("%s ", badge)
 			maxDisplayLen := 120 - len(summaryPrefix)
 			if maxDisplayLen < 10 {
 				maxDisplayLen = 10

@@ -128,14 +128,8 @@ You are a code reviewer. Your job is to review solution code for quality and con
 }
 
 // AllowedTools returns the comma-separated tool pattern string for --allowedTools.
-// workDir must be an absolute path to the agent's working directory.
-func AllowedTools(workDir string) string {
-	// Normalize to forward slashes so paths are valid on Windows
-	workDir = strings.ReplaceAll(workDir, `\`, "/")
-	return fmt.Sprintf(
-		"Bash(%s/*),Read(%s/*),Write(%s/*),Edit(%s/*),Glob(%s/*),Grep(%s/*),WebFetch(*),WebSearch(*),mcp__bobbi__*",
-		workDir, workDir, workDir, workDir, workDir, workDir,
-	)
+func AllowedTools() string {
+	return "Bash(/*),Read(/*),Write(/*),Edit(/*),Glob(/*),Grep(/*),WebFetch(*),WebSearch(*),mcp__bobbi__*"
 }
 
 func McpJSON(agentType AgentType, bobbiBin string, queuesDir string) string {

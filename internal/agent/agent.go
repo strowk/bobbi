@@ -73,12 +73,6 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 	}
 	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 
-	// Resolve absolute working directory for --allowedTools
-	absWorkDir, err := filepath.Abs(workDir)
-	if err != nil {
-		return fmt.Errorf("resolve workdir: %w", err)
-	}
-
 	// Resolve absolute path to queues directory for MCP config
 	queuesDir := filepath.Join(opts.BaseDir, ".bobbi", "queues")
 	absQueuesDir, err := filepath.Abs(queuesDir)
@@ -101,12 +95,23 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 		return fmt.Errorf("resolve mcp config path: %w", err)
 	}
 
-	cmd := exec.Command("claude",
+	args := []string{
 		"-p",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--mcp-config", absMcpConfigPath,
-		"--allowedTools", AllowedTools(absWorkDir),
+		"--allowedTools", AllowedTools(),
+	}
+
+	// Log the command for debugging
+	if opts.LogFunc != nil {
+		opts.LogFunc("Starting agent %s with command: claude %s", agentType, strings.Join(args, " "))
+		opts.LogFunc("Working directory: %s", workDir)
+		opts.LogFunc("MCP config path: %s", absMcpConfigPath)
+	}
+
+	cmd := exec.Command("claude",
+		args...,
 	)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)

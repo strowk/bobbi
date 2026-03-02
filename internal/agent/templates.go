@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -128,38 +127,15 @@ You are a code reviewer. Your job is to review solution code for quality and con
 	return ""
 }
 
-func SettingsJSON(workDir string) string {
+// AllowedTools returns the comma-separated tool pattern string for --allowedTools.
+// workDir must be an absolute path to the agent's working directory.
+func AllowedTools(workDir string) string {
 	// Normalize to forward slashes so paths are valid on Windows
 	workDir = strings.ReplaceAll(workDir, `\`, "/")
-	type permissions struct {
-		Allow []string `json:"allow"`
-		Deny  []string `json:"deny"`
-	}
-	type settings struct {
-		Permissions permissions `json:"permissions"`
-	}
-	s := settings{
-		Permissions: permissions{
-			Allow: []string{
-				fmt.Sprintf("Bash(%s/*)", workDir),
-				fmt.Sprintf("Read(%s/*)", workDir),
-				fmt.Sprintf("Write(%s/*)", workDir),
-				fmt.Sprintf("Edit(%s/*)", workDir),
-				fmt.Sprintf("Glob(%s/*)", workDir),
-				fmt.Sprintf("Grep(%s/*)", workDir),
-				"WebFetch(*)",
-				"WebSearch(*)",
-				"mcp__bobbi__*",
-			},
-			Deny: []string{},
-		},
-	}
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		// This struct contains only string slices, so marshaling cannot fail.
-		panic(fmt.Sprintf("failed to marshal settings JSON: %v", err))
-	}
-	return string(data)
+	return fmt.Sprintf(
+		"Bash(%s/*),Read(%s/*),Write(%s/*),Edit(%s/*),Glob(%s/*),Grep(%s/*),WebFetch(*),WebSearch(*),mcp__bobbi__*",
+		workDir, workDir, workDir, workDir, workDir, workDir,
+	)
 }
 
 func McpJSON(agentType AgentType, bobbiBin string, queuesDir string) string {
@@ -178,24 +154,22 @@ func McpJSON(agentType AgentType, bobbiBin string, queuesDir string) string {
 }
 
 func GitIgnore(agentType AgentType) string {
-	common := `.claude/settings.json
-`
 	switch agentType {
 	case Solver:
 		return `architecture/
 solution-deliverable/
-` + common
+`
 	case Evaluator:
 		return `architecture/
 solution-deliverable/
-` + common
+`
 	case Architect:
-		return common
+		return ""
 	case Reviewer:
 		return `architecture/
 evaluation/
 solution/
-` + common
+`
 	}
 	return ""
 }

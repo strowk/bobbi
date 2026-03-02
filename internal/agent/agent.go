@@ -73,17 +73,10 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 	}
 	bobbiBin = strings.ReplaceAll(bobbiBin, `\`, "/")
 
-	// Regenerate .claude/settings.json with correct absolute paths
+	// Resolve absolute working directory for --allowedTools
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return fmt.Errorf("resolve workdir: %w", err)
-	}
-	settingsDir := filepath.Join(workDir, ".claude")
-	if err := os.MkdirAll(settingsDir, 0755); err != nil {
-		return fmt.Errorf("create settings dir: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(settingsDir, "settings.json"), []byte(SettingsJSON(absWorkDir)), 0644); err != nil {
-		return fmt.Errorf("write settings.json: %w", err)
 	}
 
 	// Resolve absolute path to queues directory for MCP config
@@ -110,10 +103,10 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 
 	cmd := exec.Command("claude",
 		"-p",
-		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--mcp-config", absMcpConfigPath,
+		"--allowedTools", AllowedTools(absWorkDir),
 	)
 	cmd.Dir = workDir
 	cmd.Stdin = strings.NewReader(prompt)

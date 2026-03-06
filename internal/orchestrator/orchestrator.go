@@ -17,7 +17,7 @@ import (
 )
 
 // maxAgentRetries is the maximum number of times a failed work item will be
-// retried before being permanently marked as completed (to avoid infinite loops).
+// retried before being permanently marked as failed (to avoid infinite loops).
 const maxAgentRetries = 3
 
 // AgentInfo holds the current state of a single agent type for display.

@@ -837,6 +837,40 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// mergeLogLines merges new streaming log lines into existing ones for the same message.
+// In Claude Code's stream-json format, each event for the same message.id contains only
+// the currently-active content block. Text and thinking blocks are progressive updates
+// that replace earlier versions, while tool_use and tool_error lines accumulate.
+func mergeLogLines(existing, incoming []agent.LogLine) []agent.LogLine {
+	// Determine which replaceable types are in the incoming set
+	newHasText := false
+	newHasThinking := false
+	for _, l := range incoming {
+		switch l.Type {
+		case agent.LogText:
+			newHasText = true
+		case agent.LogThinking:
+			newHasThinking = true
+		}
+	}
+
+	// Keep existing lines unless their type is being replaced by incoming
+	var merged []agent.LogLine
+	for _, l := range existing {
+		if l.Type == agent.LogText && newHasText {
+			continue
+		}
+		if l.Type == agent.LogThinking && newHasThinking {
+			continue
+		}
+		merged = append(merged, l)
+	}
+
+	// Append all incoming lines
+	merged = append(merged, incoming...)
+	return merged
+}
+
 // flattenLogGroups rebuilds the flattened LogLine slice from all log groups.
 func flattenLogGroups(groups []logGroup) []agent.LogLine {
 	var result []agent.LogLine
@@ -940,9 +974,12 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 			ls := o.logState[agentType]
 			if messageID != "" {
 				if idx, ok := ls.messageIndex[messageID]; ok {
-					// Replace existing entry (streaming dedup)
-					ls.groups[idx].lines = lines
-					// Rebuild flattened log
+					// Streaming dedup: merge new lines with existing.
+					// Each streaming event for the same message.id contains only
+					// the currently-active content block, not all previous blocks.
+					// Text and thinking blocks are progressive updates (replace),
+					// while tool_use lines are always new (append).
+					ls.groups[idx].lines = mergeLogLines(ls.groups[idx].lines, lines)
 					info.LogLines = flattenLogGroups(ls.groups)
 					o.mu.Unlock()
 					return

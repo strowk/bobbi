@@ -456,6 +456,8 @@ func formatToolUseSummary(name string, input json.RawMessage) string {
 		if cmd, ok := inputMap["command"]; ok {
 			var command string
 			if json.Unmarshal(cmd, &command) == nil {
+				// Replace newlines with spaces to keep tool use summary single-line
+				command = strings.ReplaceAll(command, "\n", " ")
 				if len(command) > 80 {
 					command = command[:77] + "..."
 				}

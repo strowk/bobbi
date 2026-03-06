@@ -281,12 +281,17 @@ func (m TUIModel) detailContentLines() []detailLine {
 		if ll.Type == agent.LogThinking && !m.thinkingMode {
 			continue
 		}
-		if m.wrapMode {
-			for _, wl := range wrapLine(ll.Text, inner) {
-				lines = append(lines, detailLine{wl, ll.Type})
+		// Split embedded newlines so each visual line is a separate entry.
+		// This ensures the height calculation matches the actual rendered output.
+		subLines := strings.Split(ll.Text, "\n")
+		for _, sl := range subLines {
+			if m.wrapMode {
+				for _, wl := range wrapLine(sl, inner) {
+					lines = append(lines, detailLine{wl, ll.Type})
+				}
+			} else {
+				lines = append(lines, detailLine{sl, ll.Type})
 			}
-		} else {
-			lines = append(lines, detailLine{ll.Text, ll.Type})
 		}
 	}
 
@@ -301,6 +306,29 @@ func promptSeparator(label string, width int) string {
 		remaining = 0
 	}
 	return prefix + strings.Repeat("─", remaining)
+}
+
+// truncateToWidth truncates a string to fit within the given display width,
+// appending "..." if truncated. Uses runewidth for accurate display-width
+// calculation with multi-byte and double-width Unicode characters.
+func truncateToWidth(line string, width int) string {
+	if runewidth.StringWidth(line) <= width {
+		return line
+	}
+	suffix := "..."
+	targetWidth := width - runewidth.StringWidth(suffix)
+	if targetWidth <= 0 {
+		return suffix
+	}
+	w := 0
+	for i, r := range line {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > targetWidth {
+			return line[:i] + suffix
+		}
+		w += rw
+	}
+	return line + suffix
 }
 
 // wrapLine soft-wraps a single line at the given display width.
@@ -501,16 +529,16 @@ func (m TUIModel) viewMain() string {
 			displayText = strings.ReplaceAll(displayText, "\n", " ")
 
 			summaryPrefix := fmt.Sprintf("%s ", badge)
-			maxDisplayLen := 120 - len(summaryPrefix)
+			maxDisplayLen := 120 - runewidth.StringWidth(summaryPrefix)
 			if maxDisplayLen < 10 {
 				maxDisplayLen = 10
 			}
-			if len(displayText) > maxDisplayLen {
-				displayText = displayText[:maxDisplayLen-3] + "..."
+			if runewidth.StringWidth(displayText) > maxDisplayLen {
+				displayText = truncateToWidth(displayText, maxDisplayLen)
 			}
 			summary := fmt.Sprintf("    %s%s", summaryPrefix, displayText)
-			if len(summary) > inner {
-				summary = summary[:inner-3] + "..."
+			if runewidth.StringWidth(summary) > inner {
+				summary = truncateToWidth(summary, inner)
 			}
 			rows = append(rows, lipgloss.NewStyle().Foreground(colorDimGray).Italic(true).Render(summary))
 
@@ -518,8 +546,8 @@ func (m TUIModel) viewMain() string {
 			previewLines := lastNonEmptyLogLines(ai.LogLines, 2)
 			for _, ll := range previewLines {
 				line := ll.Text
-				if len(line) > inner-6 {
-					line = line[:inner-9] + "..."
+				if runewidth.StringWidth(line) > inner-6 {
+					line = truncateToWidth(line, inner-6)
 				}
 				rows = append(rows, lipgloss.NewStyle().Foreground(colorGray).Render("      "+line))
 			}
@@ -610,6 +638,19 @@ func (m TUIModel) viewDetail() string {
 
 	headerLeft := nameStatus
 	headerRight := tokStr + "  " + indicators
+
+	// Ensure header content fits within inner width to prevent lipgloss wrapping
+	// which would add extra lines and corrupt BubbleTea's rendering.
+	leftW := lipgloss.Width(headerLeft)
+	rightW := lipgloss.Width(headerRight)
+	if leftW+1+rightW > inner {
+		// Truncate the right side to fit
+		maxRight := inner - leftW - 1
+		if maxRight < 10 {
+			maxRight = 10
+		}
+		headerRight = truncateToWidth(headerRight, maxRight)
+	}
 	header := boxStyle.Render(spaced(headerLeft, headerRight, inner))
 
 	// ── Content (prompt + log) ───────────────────────────
@@ -631,9 +672,9 @@ func (m TUIModel) viewDetail() string {
 	for i := startLine; i < endLine; i++ {
 		dl := allLines[i]
 		line := dl.text
-		// In no-wrap mode, truncate long lines
-		if !m.wrapMode && len(line) > inner {
-			line = line[:inner-3] + "..."
+		// In no-wrap mode, truncate long lines using display width
+		if !m.wrapMode && runewidth.StringWidth(line) > inner {
+			line = truncateToWidth(line, inner)
 		}
 		// Apply styling based on line type
 		switch dl.lineType {

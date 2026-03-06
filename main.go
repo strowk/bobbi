@@ -7,14 +7,23 @@ import (
 	"bobbi/internal/cmd"
 )
 
+// Build-time variables injected via -ldflags.
+var (
+	gitHash   = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: bobbi <init|up|mcp|feedback|backlog>\n")
+		fmt.Fprintf(os.Stderr, "Usage: bobbi <init|up|mcp|feedback|backlog|version>\n")
 		os.Exit(1)
 	}
 
 	var err error
 	switch os.Args[1] {
+	case "version":
+		fmt.Printf("bobbi %s built %s\n", gitHash, buildDate)
+		os.Exit(0)
 	case "init":
 		err = cmd.Init()
 	case "up":
@@ -26,7 +35,7 @@ func main() {
 	case "backlog":
 		err = cmd.Backlog(os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbi <init|up|mcp|feedback|backlog>\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\nUsage: bobbi <init|up|mcp|feedback|backlog|version>\n", os.Args[1])
 		os.Exit(1)
 	}
 

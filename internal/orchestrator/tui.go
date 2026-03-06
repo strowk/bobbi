@@ -604,8 +604,17 @@ func (m TUIModel) viewDetail() string {
 		Width(w)
 
 	// ── Header ───────────────────────────────────────────
+	// Session ID: truncated UUID or "—"
+	sessionDisplay := "—"
+	if ai.SessionID != "" {
+		sid := ai.SessionID
+		if len(sid) > 8 {
+			sid = sid[:8]
+		}
+		sessionDisplay = sid
+	}
 	nameStatus := lipgloss.NewStyle().Bold(true).Foreground(colorCyan).
-		Render(fmt.Sprintf("%s [%s]", at, ai.Status))
+		Render(fmt.Sprintf("%s [%s] %s", at, ai.Status, sessionDisplay))
 	var detailToolStr string
 	if ai.ToolFailures > 0 {
 		detailToolStr = fmt.Sprintf("tools: %d (%d err)", ai.ToolUses, ai.ToolFailures)

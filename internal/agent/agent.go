@@ -178,10 +178,14 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 
 			var event claudeEvent
 			if json.Unmarshal([]byte(line), &event) == nil {
-				// Session ID capture
-				if opts.OnSessionID != nil && !sessionIDCaptured && event.SessionID != "" {
+				// Session ID capture: check both sessionId (camelCase) and session_id (snake_case)
+				sid := event.SessionID
+				if sid == "" {
+					sid = event.SessionIDSnake
+				}
+				if opts.OnSessionID != nil && !sessionIDCaptured && sid != "" {
 					sessionIDCaptured = true
-					opts.OnSessionID(event.SessionID)
+					opts.OnSessionID(sid)
 				}
 				// Process event for tokens, tool use, and log content
 				processEvent(&event, opts)
@@ -226,9 +230,10 @@ func StartAgent(agentType AgentType, workDir string, prompt string, opts *StartO
 
 // claudeEvent represents the relevant fields of a JSONL event from claude's stream-json output.
 type claudeEvent struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionId"`
-	Message   *struct {
+	Type           string `json:"type"`
+	SessionID      string `json:"sessionId"`
+	SessionIDSnake string `json:"session_id"`
+	Message        *struct {
 		ID    string `json:"id"`
 		Usage *struct {
 			InputTokens              int64 `json:"input_tokens"`

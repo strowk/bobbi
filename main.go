@@ -13,6 +13,8 @@ var (
 	buildDate = "unknown"
 )
 
+// build with: go build -ldflags="-X main.gitHash=$(git rev-parse HEAD) -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: bobbi <init|up|mcp|feedback|backlog|version>\n")

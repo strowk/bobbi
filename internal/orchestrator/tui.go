@@ -121,15 +121,13 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Check if the orchestrator has signalled confirm_solution (done).
-		// We do NOT quit here — the TUI stays visible so the user can see
-		// running agents finish. We quit only on OrchestratorDoneMsg which
-		// is sent after Run() fully returns.
+		// Check if the orchestrator has signalled shutdown (confirm_solution,
+		// SIGINT, or timeout). We do NOT quit here — the TUI stays visible so
+		// the user can see running agents finish. We quit only on
+		// OrchestratorDoneMsg which is sent after Run() fully returns.
 		if !m.shuttingDown {
-			select {
-			case <-m.orch.Done():
+			if m.orch.isShuttingDown() {
 				m.shuttingDown = true
-			default:
 			}
 		}
 		// In follow mode, snap to bottom
@@ -149,9 +147,14 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m TUIModel) updateMainView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
-		m.quitting = true
-		m.cancel()
-		return m, tea.Quit
+		// Initiate graceful shutdown: cancel the orchestrator context but
+		// keep the TUI running so the user can see agents finish. The TUI
+		// only exits when OrchestratorDoneMsg arrives (after Run() returns).
+		if !m.shuttingDown {
+			m.shuttingDown = true
+			m.cancel()
+		}
+		return m, nil
 	case "up", "k":
 		if m.selectedIdx > 0 {
 			m.selectedIdx--
@@ -171,9 +174,12 @@ func (m TUIModel) updateMainView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m TUIModel) updateDetailView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
-		m.quitting = true
-		m.cancel()
-		return m, tea.Quit
+		// Initiate graceful shutdown from detail view
+		if !m.shuttingDown {
+			m.shuttingDown = true
+			m.cancel()
+		}
+		return m, nil
 	case "esc", "q":
 		m.detailView = false
 		return m, nil
@@ -420,7 +426,12 @@ func (m TUIModel) viewMain() string {
 	// ── Header ───────────────────────────────────────────
 	titleText := "BOBBI Orchestrator"
 	if m.shuttingDown {
-		titleText = "BOBBI Orchestrator — Shutting down..."
+		runningCount := m.orch.RunningAgentCount()
+		if runningCount > 0 {
+			titleText = fmt.Sprintf("SHUTTING DOWN — waiting for %d agent(s)...", runningCount)
+		} else {
+			titleText = "SHUTTING DOWN — finishing..."
+		}
 	}
 	title := lipgloss.NewStyle().Bold(true).Foreground(colorPurple).
 		Render(titleText)

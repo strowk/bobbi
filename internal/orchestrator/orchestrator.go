@@ -81,6 +81,9 @@ type Orchestrator struct {
 	shutdownCh   chan struct{}
 	shutdownOnce sync.Once
 
+	// Shutdown reason: "confirm_solution", "timeout", or "interrupted"
+	shutdownReason string
+
 	// File logging
 	logFile   *os.File
 	logFileMu sync.Mutex
@@ -103,6 +106,7 @@ type Orchestrator struct {
 	failedCount     int32                              // atomic
 	startTime       time.Time
 	sharedMaxTokens float64 // shared maximum for sparkline normalization
+	sessionCounts   map[agent.AgentType]int            // number of sessions per agent type
 }
 
 type workItem struct {
@@ -128,23 +132,28 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		cmu[at] = &sync.Mutex{}
 		ls[at] = &agentLogState{messageIndex: make(map[string]int)}
 	}
+	sc := make(map[agent.AgentType]int)
+	for _, at := range agent.AllTypes() {
+		sc[at] = 0
+	}
 	return &Orchestrator{
-		baseDir:      baseDir,
-		queuesDir:    filepath.Join(baseDir, ".bobbi", "queues"),
-		completedDir: filepath.Join(baseDir, ".bobbi", "completed"),
-		failedDir:    filepath.Join(baseDir, ".bobbi", "failed"),
-		userPrompt:   userPrompt,
-		rawMode:      rawMode,
-		NoSparklines: noSparklines,
-		channels:     make(map[agent.AgentType]chan workItem),
-		dispatched:   make(map[string]bool),
-		retryCount:   make(map[string]int),
-		timeout:      timeout,
-		done:         make(chan struct{}),
-		shutdownCh:   make(chan struct{}),
-		copyMu:       cmu,
-		agentInfo:    info,
-		logState:     ls,
+		baseDir:       baseDir,
+		queuesDir:     filepath.Join(baseDir, ".bobbi", "queues"),
+		completedDir:  filepath.Join(baseDir, ".bobbi", "completed"),
+		failedDir:     filepath.Join(baseDir, ".bobbi", "failed"),
+		userPrompt:    userPrompt,
+		rawMode:       rawMode,
+		NoSparklines:  noSparklines,
+		channels:      make(map[agent.AgentType]chan workItem),
+		dispatched:    make(map[string]bool),
+		retryCount:    make(map[string]int),
+		timeout:       timeout,
+		done:          make(chan struct{}),
+		shutdownCh:    make(chan struct{}),
+		copyMu:        cmu,
+		agentInfo:     info,
+		logState:      ls,
+		sessionCounts: sc,
 	}
 }
 
@@ -252,6 +261,44 @@ func (o *Orchestrator) GetTotalToolUses() (int, int) {
 	return totalUses, totalFailures
 }
 
+// GetShutdownReason returns the shutdown reason.
+func (o *Orchestrator) GetShutdownReason() string {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.shutdownReason
+}
+
+// GetSessionCounts returns a copy of the per-agent session counts.
+func (o *Orchestrator) GetSessionCounts() map[agent.AgentType]int {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	result := make(map[agent.AgentType]int)
+	for k, v := range o.sessionCounts {
+		result[k] = v
+	}
+	return result
+}
+
+// SolutionConfirmed returns true if confirm_solution was processed.
+func (o *Orchestrator) SolutionConfirmed() bool {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.shutdownReason == "confirm_solution"
+}
+
+// RunningAgentCount returns the number of agents currently in "running" status.
+func (o *Orchestrator) RunningAgentCount() int {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	count := 0
+	for _, info := range o.agentInfo {
+		if info.Status == "running" {
+			count++
+		}
+	}
+	return count
+}
+
 // Done returns a channel that is closed when the orchestrator is done.
 func (o *Orchestrator) Done() <-chan struct{} {
 	return o.done
@@ -348,13 +395,24 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		select {
 		case <-o.done:
 			o.log("Solution confirmed, shutting down...")
+			o.mu.Lock()
+			if o.shutdownReason == "" {
+				o.shutdownReason = "confirm_solution"
+			}
+			o.mu.Unlock()
 			o.shutdown()
 			return nil
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
 				o.log("Time limit of %s reached, shutting down...", o.timeout)
+				o.mu.Lock()
+				o.shutdownReason = "timeout"
+				o.mu.Unlock()
 			} else {
 				o.log("Shutting down orchestrator...")
+				o.mu.Lock()
+				o.shutdownReason = "interrupted"
+				o.mu.Unlock()
 			}
 			o.shutdown()
 			return nil
@@ -933,6 +991,8 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info.SparklineData = nil
 	// Reset deduplication state for new session
 	o.logState[agentType] = &agentLogState{messageIndex: make(map[string]int)}
+	// Track session count
+	o.sessionCounts[agentType]++
 	o.mu.Unlock()
 
 	// Snapshot queue files before starting the architect, so we can detect
@@ -1301,6 +1361,49 @@ func (o *Orchestrator) handleHandoffSolution() error {
 	return nil
 }
 
+// PrintRunSummary writes a plain text run summary to the given writer.
+func (o *Orchestrator) PrintRunSummary(w io.Writer) {
+	reason := o.GetShutdownReason()
+	if reason == "" {
+		reason = "unknown"
+	}
+
+	elapsed := time.Since(o.GetStartTime()).Truncate(time.Second)
+
+	// Build session counts string
+	sessionCounts := o.GetSessionCounts()
+	var sessionParts []string
+	for _, at := range agentOrder {
+		if count, ok := sessionCounts[at]; ok && count > 0 {
+			sessionParts = append(sessionParts, fmt.Sprintf("%s: %d", at, count))
+		}
+	}
+	sessionsStr := "none"
+	if len(sessionParts) > 0 {
+		sessionsStr = strings.Join(sessionParts, ", ")
+	}
+
+	completed := o.GetCompletedCount()
+	failed := o.GetFailedCount()
+	remaining := o.GetQueueDepth()
+
+	totalIn, totalOut := o.GetTotalTokens()
+
+	solutionStatus := "not confirmed"
+	if o.SolutionConfirmed() {
+		solutionStatus = "confirmed"
+	}
+
+	fmt.Fprintf(w, "\n── BOBBI run summary ──────────────────────────\n")
+	fmt.Fprintf(w, "Shutdown: %s\n", reason)
+	fmt.Fprintf(w, "Elapsed:  %s\n", elapsed)
+	fmt.Fprintf(w, "Sessions: %s\n", sessionsStr)
+	fmt.Fprintf(w, "Requests: %d completed, %d failed, %d remaining\n", completed, failed, remaining)
+	fmt.Fprintf(w, "Tokens:   %s input / %s output\n", formatNumber(totalIn), formatNumber(totalOut))
+	fmt.Fprintf(w, "Solution: %s\n", solutionStatus)
+	fmt.Fprintf(w, "────────────────────────────────────────────────\n")
+}
+
 func (o *Orchestrator) handleConfirmSolution(item workItem) {
 	// 1. Copy evaluation/solution-deliverable/ to output/
 	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
@@ -1331,5 +1434,8 @@ func (o *Orchestrator) handleConfirmSolution(item workItem) {
 	o.log("========================================")
 
 	// 4. Signal orchestrator to enter graceful shutdown
+	o.mu.Lock()
+	o.shutdownReason = "confirm_solution"
+	o.mu.Unlock()
 	o.doneOnce.Do(func() { close(o.done) })
 }

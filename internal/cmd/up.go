@@ -89,7 +89,9 @@ func Up(args []string) error {
 		}()
 
 		fmt.Fprintln(os.Stderr, "[bobbi] Starting orchestrator (raw mode)...")
-		return orch.Run(ctx)
+		err := orch.Run(ctx)
+		orch.PrintRunSummary(os.Stdout)
+		return err
 	}
 
 	// TUI mode
@@ -109,6 +111,7 @@ func Up(args []string) error {
 	if _, err := program.Run(); err != nil {
 		cancel()
 		orchErr := <-errCh
+		orch.PrintRunSummary(os.Stdout)
 		if orchErr != nil {
 			return fmt.Errorf("TUI error: %w (orchestrator also errored: %v)", err, orchErr)
 		}
@@ -117,6 +120,7 @@ func Up(args []string) error {
 
 	orchErr := <-errCh
 	cancel()
+	orch.PrintRunSummary(os.Stdout)
 	return orchErr
 }
 

@@ -66,10 +66,10 @@ You are a test engineer. Your job is to verify that a solution meets the technic
 - Use the request_architecture_change MCP tool if the contract is unclear or contradictory
 
 ## Rules
+- CRITICAL: When sending feedback via request_solution_change, do NOT reference files from your own repository (your test files, etc.) — the recipient cannot see them. You MAY reference files in architecture/ since those are shared. Describe problems in terms of expected vs actual behavior, error messages, and contract requirements.
 - Test based ONLY on the technical contract, not on implementation details
 - Write clear, specific test cases
 - Provide actionable feedback when tests fail
-- When sending feedback via request_solution_change, do NOT reference files from your own repository (your test files, etc.) — the recipient cannot see them. You MAY reference files in architecture/ since those are shared. Describe problems in terms of expected vs actual behavior, error messages, and contract requirements.
 - Commit your test code to git as you work
 `
 

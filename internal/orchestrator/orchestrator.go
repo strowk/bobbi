@@ -472,56 +472,90 @@ func (o *Orchestrator) shutdown() {
 }
 
 // sanitizeStartupQueue applies cross-agent-type sanitization rules to the
-// startup queue. When request_solution_change is present, it drops stale
-// start_evaluator/start_reviewer (without additional_context) and handoff_solution
-// requests, since evaluating/reviewing a solution that is about to change is wasteful.
+// startup queue:
+// - Rules 1 & 2: When request_solution_change is present, drops stale
+//   start_evaluator/start_reviewer (without additional_context) and handoff_solution.
+// - Rule 3: When confirm_solution is present alongside any other request with
+//   non-empty additional_context, drops confirm_solution to prevent immediate
+//   shutdown when there is pending meaningful work.
 func (o *Orchestrator) sanitizeStartupQueue() {
 	requests, paths, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err != nil || len(requests) == 0 {
 		return
 	}
 
-	// Check if there's at least one request_solution_change
+	// Pre-scan: determine which rules are applicable
 	hasRequestSolutionChange := false
-	for _, req := range requests {
-		if req.Request.Type == "request_solution_change" {
+	hasConfirmSolution := false
+	confirmSolutionIdx := -1
+	hasOtherWithContext := false
+	for i, req := range requests {
+		switch req.Request.Type {
+		case "request_solution_change":
 			hasRequestSolutionChange = true
-			break
+		case "confirm_solution":
+			hasConfirmSolution = true
+			confirmSolutionIdx = i
 		}
 	}
-	if !hasRequestSolutionChange {
+
+	// Check if any non-confirm_solution request has non-empty additional_context
+	if hasConfirmSolution {
+		for i, req := range requests {
+			if i != confirmSolutionIdx && req.Request.AdditionalContext != "" {
+				hasOtherWithContext = true
+				break
+			}
+		}
+	}
+
+	if !hasRequestSolutionChange && !(hasConfirmSolution && hasOtherWithContext) {
 		return
 	}
 
-	dropped := 0
-	for i, req := range requests {
-		reqType := req.Request.Type
+	dropped := make(map[int]bool)
 
-		// Rule 1: request_solution_change supersedes start_evaluator/start_reviewer without additional_context
-		if (reqType == "start_evaluator" || reqType == "start_reviewer") && req.Request.AdditionalContext == "" {
-			o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
-			if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
-				o.log("Error marking completed during sanitization: %v", err)
-			}
-			atomic.AddInt32(&o.completedCount, 1)
-			dropped++
-			continue
-		}
+	// Rules 1 & 2: only apply when request_solution_change is present
+	if hasRequestSolutionChange {
+		for i, req := range requests {
+			reqType := req.Request.Type
 
-		// Rule 2: request_solution_change supersedes handoff_solution
-		if reqType == "handoff_solution" {
-			o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
-			if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
-				o.log("Error marking completed during sanitization: %v", err)
+			// Rule 1: request_solution_change supersedes start_evaluator/start_reviewer without additional_context
+			if (reqType == "start_evaluator" || reqType == "start_reviewer") && req.Request.AdditionalContext == "" {
+				o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
+				if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
+					o.log("Error marking completed during sanitization: %v", err)
+				}
+				atomic.AddInt32(&o.completedCount, 1)
+				dropped[i] = true
+				continue
 			}
-			atomic.AddInt32(&o.completedCount, 1)
-			dropped++
-			continue
+
+			// Rule 2: request_solution_change supersedes handoff_solution
+			if reqType == "handoff_solution" {
+				o.log("Startup sanitization: dropping %s (from %s) — superseded by request_solution_change", reqType, req.Request.From)
+				if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
+					o.log("Error marking completed during sanitization: %v", err)
+				}
+				atomic.AddInt32(&o.completedCount, 1)
+				dropped[i] = true
+				continue
+			}
 		}
 	}
 
-	if dropped > 0 {
-		o.log("Startup sanitization: dropped %d stale request(s)", dropped)
+	// Rule 3: confirm_solution is dropped when other requests have additional_context
+	if hasConfirmSolution && hasOtherWithContext && !dropped[confirmSolutionIdx] {
+		o.log("Startup sanitization: dropping confirm_solution (from %s) — other requests have additional_context", requests[confirmSolutionIdx].Request.From)
+		if err := queue.MarkCompleted(paths[confirmSolutionIdx], o.completedDir); err != nil {
+			o.log("Error marking completed during sanitization: %v", err)
+		}
+		atomic.AddInt32(&o.completedCount, 1)
+		dropped[confirmSolutionIdx] = true
+	}
+
+	if len(dropped) > 0 {
+		o.log("Startup sanitization: dropped %d stale request(s)", len(dropped))
 	}
 }
 

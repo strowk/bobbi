@@ -31,7 +31,7 @@ You are a software developer. Your job is to implement a solution based on the t
 
 ## Your repository structure
 - architecture/ (read-only) - contains the technical contract describing what to build
-- solution-deliverable/ - place your built/compiled output here
+- solution-deliverable/ - place your built/compiled output here (DO NOT COMMIT THIS FOLDER to git)
 - All other files in this repo are your source code
 
 ## Workflow

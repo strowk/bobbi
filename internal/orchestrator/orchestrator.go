@@ -339,6 +339,42 @@ func (o *Orchestrator) writeLogLine(source, content string) {
 	fmt.Fprintf(o.logFile, "%s [%s] %s\n", ts, source, content)
 }
 
+// updateAgentClaudeMD updates the auto-managed <this_agent_description> blocks
+// in each agent's CLAUDE.md file and commits the changes.
+func (o *Orchestrator) updateAgentClaudeMD() {
+	updated, err := agent.UpdateClaudeMDFiles(o.baseDir)
+	if err != nil {
+		o.log("Error updating agent CLAUDE.md files: %v", err)
+		return
+	}
+	if len(updated) == 0 {
+		return
+	}
+
+	o.log("Updated CLAUDE.md for: %v", updated)
+
+	// Commit changes in the affected agent git repos
+	for _, at := range updated {
+		repoDir := filepath.Join(o.baseDir, agent.RepoDir(at))
+		cmd := exec.Command("git", "add", ".claude/CLAUDE.md")
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			o.log("Error staging CLAUDE.md in %s: %v (%s)", at, err, string(out))
+			continue
+		}
+		cmd = exec.Command("git", "diff", "--cached", "--quiet")
+		cmd.Dir = repoDir
+		if err := cmd.Run(); err != nil {
+			// There are staged changes — commit them
+			cmd = exec.Command("git", "commit", "-m", "Update auto-managed CLAUDE.md block")
+			cmd.Dir = repoDir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				o.log("Error committing CLAUDE.md in %s: %v (%s)", at, err, string(out))
+			}
+		}
+	}
+}
+
 func (o *Orchestrator) Run(ctx context.Context) error {
 	// Always signal done when Run exits, so the TUI can detect it and quit.
 	defer o.doneOnce.Do(func() { close(o.done) })
@@ -346,6 +382,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.mu.Lock()
 	o.startTime = time.Now()
 	o.mu.Unlock()
+
+	// Step 2: Update agent CLAUDE.md files (auto-managed blocks)
+	o.updateAgentClaudeMD()
 
 	// Apply time limit (0 means no timeout)
 	if o.timeout > 0 {

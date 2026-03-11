@@ -44,9 +44,6 @@ bobbi init
 
 # Start the orchestration loop
 bobbi up
-
-# Run the MCP server for a specific agent (used internally)
-bobbi mcp --agent <solver|evaluator|reviewer>
 ```
 
 ## How It Works
@@ -94,7 +91,6 @@ BOBBI follows an ouroboric development loop:
 |---------|-------------|
 | `bobbi init` | Scaffolds the workspace: creates `.bobbi/`, agent repositories (`solution/`, `evaluation/`, `architecture/`, `review/`), and seeds each with initial context |
 | `bobbi up` | Starts the main orchestrator loop -- watches queues, schedules agents, and manages the development cycle |
-| `bobbi mcp --agent <name>` | Launches an MCP server (stdio transport) exposing agent-specific tools for inter-agent communication |
 
 ## Architecture
 

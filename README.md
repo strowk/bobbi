@@ -44,6 +44,28 @@ bobbi init
 
 # Start the orchestration loop
 bobbi up
+
+# Give feedback to solver agent about a bug
+bobbi feedback bug "The solution fails when input is empty."
+bobbi feedback bug # this will launch an interactive input for longer input
+
+# Give feedback to architect agent to improve spec and request new features
+bobbi feedback spec "The specification is missing edge cases around authentication."
+bobbi feedback spec # this will launch an interactive input for longer input
+
+# Give feedback to evaluator agent to add new tests or adjust existing ones
+bobbi feedback test "Add tests for the new authentication edge cases."
+bobbi feedback test # this will launch an interactive input for longer input
+
+# Add a new item to the backlog for future improvements, this will create mardkown file in .bobbi/backlog/ with the content
+bobbi backlog add "Add support for Python solutions"
+bobbi backlog add # this will launch an interactive input for longer input
+
+# List current backlog items
+bobbi backlog
+
+# Promote a backlog item to the architect or solver
+bobbi backlog promote supporting_new_command.md
 ```
 
 ## How It Works
@@ -91,6 +113,11 @@ BOBBI follows an ouroboric development loop:
 |---------|-------------|
 | `bobbi init` | Scaffolds the workspace: creates `.bobbi/`, agent repositories (`solution/`, `evaluation/`, `architecture/`, `review/`), and seeds each with initial context |
 | `bobbi up` | Starts the main orchestrator loop -- watches queues, schedules agents, and manages the development cycle |
+| `bobbi feedback [spec|bug|test] [message]` | Manually submit feedback to an agent (e.g. `bobbi feedback spec "Add new command to the solution, ..."`) |
+| `bobbi backlog add [message]` | Add a new item to the backlog (e.g. `bobbi backlog add "Add support for Python solutions"`) |
+| `bobbi backlog` | List current backlog items |
+| `bobbi backlog promote [name]` | Manually promote a backlog item to the architect or solver (e.g. `bobbi backlog promote supporting_new_command.md`) |
+| `bobbi backlog drop [name]` | Remove a backlog item (e.g. `bobbi backlog drop supporting_new_command.md`) |
 
 ## Architecture
 
@@ -126,6 +153,7 @@ The orchestrator watches this directory, dequeues requests in order, and ensures
 ```
 project/
 ├── .bobbi/
+|   ├── backlog/        # Future improvement ideas
 │   ├── queues/         # Pending request files
 │   └── completed/      # Processed request archive
 ├── architecture/       # Architect's repository

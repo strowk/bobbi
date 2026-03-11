@@ -165,7 +165,7 @@ This ouroboric setup is not just a novelty. It serves as a continuous integratio
 
 ## Licensing
 
-You can use this agent via AGPL-3.0 license. See [LICENSE](LICENSE) for details.
+You can use this software via AGPL-3.0 license. See [LICENSE](LICENSE) for details.
 
 It is also allowed to use this software under a different commericial license if you contact me as described in:
 https://str4.io/about-me

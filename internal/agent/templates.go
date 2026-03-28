@@ -16,6 +16,12 @@ func ClaudeMD(agentType AgentType) string {
 	return AutoManagedBlockComment + "\n<this_agent_description>\n" + agentInstructions(agentType) + "</this_agent_description>\n"
 }
 
+// AgentInstructions returns the raw agent instructions (without the XML wrapper).
+// This is used both for CLAUDE.md auto-update and for prompt-based fallback.
+func AgentInstructions(agentType AgentType) string {
+	return agentInstructions(agentType)
+}
+
 // agentInstructions returns the raw agent instructions (without the XML wrapper).
 func agentInstructions(agentType AgentType) string {
 	preamble := `IMPORTANT: Your working directory is the root of this repository.
@@ -137,6 +143,19 @@ You are a code reviewer. Your job is to review solution code for quality and con
 `
 	}
 	return ""
+}
+
+// HasAgentDescriptionTag checks whether the given agent's .claude/CLAUDE.md contains
+// a <this_agent_description> block. Returns true if the tag is present, false if the
+// file is missing or the tag is absent (indicating prompt-based fallback is needed).
+func HasAgentDescriptionTag(baseDir string, agentType AgentType) bool {
+	repoDir := filepath.Join(baseDir, RepoDir(agentType))
+	claudePath := filepath.Join(repoDir, ".claude", "CLAUDE.md")
+	content, err := os.ReadFile(claudePath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(content), "<this_agent_description>")
 }
 
 // UpdateClaudeMDFiles checks each agent's CLAUDE.md for a <this_agent_description> block

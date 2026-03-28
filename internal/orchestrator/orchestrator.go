@@ -37,8 +37,9 @@ type AgentInfo struct {
 	ToolFailures      int    // tool use failures for the current/latest run
 	TotalToolUses     int    // cumulative tool uses across all runs
 	TotalToolFailures int    // cumulative tool use failures across all runs
-	HasRun            bool
-	LogLines          []agent.LogLine // all extracted log lines from JSONL stream
+	HasRun              bool
+	DescriptionInjected bool               // true when agent description was prepended to prompt
+	LogLines            []agent.LogLine    // all extracted log lines from JSONL stream
 	SparklineData     []float64       // per-event total token values for sparkline
 }
 
@@ -1047,10 +1048,20 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	}
 
 	repoDir := filepath.Join(o.baseDir, agent.RepoDir(agentType))
-	prompt := agent.BuildPrompt(agentType, batch.requestType, batch.mergedContext, batch.itemCount)
+	taskPrompt := agent.BuildPrompt(agentType, batch.requestType, batch.mergedContext, batch.itemCount)
 	// Append folded change-request context if present (start_* with superseded request_*_change)
 	if batch.foldedChangeContext != "" {
-		prompt += "\n\nAdditionally, the following feedback was received from other agents:\n\n" + batch.foldedChangeContext
+		taskPrompt += "\n\nAdditionally, the following feedback was received from other agents:\n\n" + batch.foldedChangeContext
+	}
+
+	// Check if agent's CLAUDE.md has the <this_agent_description> tag.
+	// If not, prepend the agent description to the prompt (fallback).
+	descriptionInjected := false
+	fullPrompt := taskPrompt
+	if !agent.HasAgentDescriptionTag(o.baseDir, agentType) {
+		descriptionInjected = true
+		fullPrompt = agent.AgentInstructions(agentType) + "\n" + taskPrompt
+		o.log("Agent description injected into prompt for %s (CLAUDE.md tag absent)", agentType)
 	}
 
 	// Synchronization: acquire lock and pull agent repo before starting
@@ -1092,7 +1103,8 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info := o.agentInfo[agentType]
 	info.Status = "running"
 	info.SessionID = ""
-	info.Prompt = prompt
+	info.Prompt = taskPrompt
+	info.DescriptionInjected = descriptionInjected
 	info.RequestType = batch.requestType
 	info.AdditionalContext = additionalCtx
 	info.InputTokens = 0
@@ -1198,7 +1210,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 		}
 	}
 
-	agentErr := agent.StartAgent(agentType, repoDir, prompt, opts)
+	agentErr := agent.StartAgent(agentType, repoDir, fullPrompt, opts)
 
 	// Update agent state to idle
 	o.mu.Lock()

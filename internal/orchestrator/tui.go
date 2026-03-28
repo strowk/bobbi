@@ -264,8 +264,11 @@ func (m TUIModel) detailContentLines() []detailLine {
 	var lines []detailLine
 
 	// ── PROMPT section ──
-	if ai.Prompt != "" {
+	if ai.Prompt != "" || ai.DescriptionInjected {
 		lines = append(lines, detailLine{promptSeparator("PROMPT", inner), agent.LogText})
+		if ai.DescriptionInjected {
+			lines = append(lines, detailLine{"[agent description injected into prompt]", agent.LogText})
+		}
 		promptLines := strings.Split(ai.Prompt, "\n")
 		if m.wrapMode {
 			for _, pl := range promptLines {

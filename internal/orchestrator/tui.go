@@ -164,6 +164,12 @@ func (m TUIModel) updateMainView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedIdx++
 		}
 	case "enter":
+		// Don't open detail view for disabled agents
+		selectedAgent := agentOrder[m.selectedIdx]
+		ai := m.orch.GetAgentInfo(selectedAgent)
+		if ai.Status == "disabled" {
+			return m, nil
+		}
 		m.detailView = true
 		m.followMode = true
 		m.snapToBottom()
@@ -476,6 +482,9 @@ func (m TUIModel) viewMain() string {
 
 		var status string
 		switch ai.Status {
+		case "disabled":
+			status = lipgloss.NewStyle().Foreground(colorGray).
+				Render(fmt.Sprintf("%-12s", "⊘ disabled"))
 		case "running":
 			status = lipgloss.NewStyle().Bold(true).Foreground(colorGreen).
 				Render(fmt.Sprintf("%-12s", "● running"))
@@ -485,6 +494,16 @@ func (m TUIModel) viewMain() string {
 		default:
 			status = lipgloss.NewStyle().Foreground(colorGray).
 				Render(fmt.Sprintf("%-12s", "○ idle"))
+		}
+
+		// Disabled agents show minimal info — no session, tokens, sparklines, or tools
+		if ai.Status == "disabled" {
+			row := fmt.Sprintf("%s%s %s", indicator, name, status)
+			if i == m.selectedIdx {
+				row = lipgloss.NewStyle().Background(lipgloss.Color("#1E1E2E")).Render(row)
+			}
+			rows = append(rows, row)
+			continue
 		}
 
 		// Session ID: show truncated UUID when running, "—" otherwise

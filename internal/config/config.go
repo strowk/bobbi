@@ -9,6 +9,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AgentEnabledConfig holds the enabled flag for a single agent type.
+type AgentEnabledConfig struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// AgentsConfig holds per-agent configuration (only evaluator and reviewer can be disabled).
+type AgentsConfig struct {
+	Evaluator *AgentEnabledConfig `yaml:"evaluator"`
+	Reviewer  *AgentEnabledConfig `yaml:"reviewer"`
+}
+
 // SyncConfig holds synchronization settings from .bobbi/config.yaml.
 type SyncConfig struct {
 	Enabled           bool     `yaml:"enabled"`
@@ -20,7 +31,8 @@ type SyncConfig struct {
 
 // Config represents the full .bobbi/config.yaml file.
 type Config struct {
-	Sync SyncConfig `yaml:"sync"`
+	Agents AgentsConfig `yaml:"agents"`
+	Sync   SyncConfig   `yaml:"sync"`
 }
 
 // Load reads and parses .bobbi/config.yaml from the given base directory.
@@ -38,7 +50,36 @@ func Load(baseDir string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	// Validate unknown keys under "agents" section
+	if err := validateAgentsKeys(data); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
+}
+
+// validateAgentsKeys checks that the agents section only contains known keys (evaluator, reviewer).
+func validateAgentsKeys(data []byte) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil // already handled by main unmarshal
+	}
+	agentsRaw, ok := raw["agents"]
+	if !ok || agentsRaw == nil {
+		return nil
+	}
+	agentsMap, ok := agentsRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	validKeys := map[string]bool{"evaluator": true, "reviewer": true}
+	for key := range agentsMap {
+		if !validKeys[key] {
+			return fmt.Errorf("agents: unknown agent key %q (valid: evaluator, reviewer)", key)
+		}
+	}
+	return nil
 }
 
 // Validate checks that required fields are present when sync is enabled.
@@ -89,6 +130,25 @@ func (c *Config) GetHeartbeatInterval() time.Duration {
 	}
 	d, _ := time.ParseDuration(c.Sync.HeartbeatInterval)
 	return d
+}
+
+// IsAgentEnabled returns true if the given agent type is enabled.
+// Architect and solver are always enabled. Evaluator and reviewer default to true.
+func (c *Config) IsAgentEnabled(agentType string) bool {
+	switch agentType {
+	case "evaluator":
+		if c.Agents.Evaluator != nil && c.Agents.Evaluator.Enabled != nil {
+			return *c.Agents.Evaluator.Enabled
+		}
+		return true
+	case "reviewer":
+		if c.Agents.Reviewer != nil && c.Agents.Reviewer.Enabled != nil {
+			return *c.Agents.Reviewer.Enabled
+		}
+		return true
+	default:
+		return true // architect and solver are always enabled
+	}
 }
 
 // IsSyncedAgent returns true if the given agent type name is in the sync.agents list.

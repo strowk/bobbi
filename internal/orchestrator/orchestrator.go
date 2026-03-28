@@ -113,6 +113,9 @@ type Orchestrator struct {
 
 	// Synchronization
 	syncMgr *syncmgr.Manager
+
+	// Agent configuration (which agents are enabled)
+	cfg *config.Config
 }
 
 type workItem struct {
@@ -134,7 +137,11 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 	cmu := make(map[agent.AgentType]*sync.Mutex)
 	ls := make(map[agent.AgentType]*agentLogState)
 	for _, at := range agent.AllTypes() {
-		info[at] = &AgentInfo{Status: "idle"}
+		status := "idle"
+		if !cfg.IsAgentEnabled(string(at)) {
+			status = "disabled"
+		}
+		info[at] = &AgentInfo{Status: status}
 		cmu[at] = &sync.Mutex{}
 		ls[at] = &agentLogState{messageIndex: make(map[string]int)}
 	}
@@ -164,6 +171,7 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		agentInfo:     info,
 		logState:      ls,
 		sessionCounts: sc,
+		cfg:           cfg,
 	}
 
 	orch.syncMgr = syncmgr.New(baseDir, cfg, orch.log)
@@ -333,6 +341,11 @@ func (o *Orchestrator) isShuttingDown() bool {
 	}
 }
 
+// isAgentEnabled returns true if the given agent type is enabled in configuration.
+func (o *Orchestrator) isAgentEnabled(agentType agent.AgentType) bool {
+	return o.cfg.IsAgentEnabled(string(agentType))
+}
+
 func (o *Orchestrator) log(format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	if o.rawMode {
@@ -407,6 +420,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	// Step 3: Update agent CLAUDE.md files (auto-managed blocks)
 	o.updateAgentClaudeMD()
+
+	// Step 4: Log agent configuration
+	for _, at := range agent.AllTypes() {
+		if !o.isAgentEnabled(at) {
+			o.log("Agent %s is disabled via configuration", at)
+		}
+	}
 
 	// Apply time limit (0 means no timeout)
 	if o.timeout > 0 {
@@ -623,6 +643,16 @@ func (o *Orchestrator) poll() {
 		targetAgent := o.routeRequest(reqType)
 		if targetAgent == "" {
 			o.log("Unknown request type: %s", reqType)
+			continue
+		}
+
+		// Skip requests targeting disabled agents
+		if !o.isAgentEnabled(targetAgent) {
+			o.log("Skipping %s request (from: %s) — %s agent is disabled", reqType, req.Request.From, targetAgent)
+			if err := queue.MarkCompleted(paths[i], o.completedDir); err != nil {
+				o.log("Error marking completed: %v", err)
+			}
+			atomic.AddInt32(&o.completedCount, 1)
 			continue
 		}
 
@@ -1327,8 +1357,14 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch, preA
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
 		copyFailed := false
 
-		// Always copy architecture to solver and evaluator repos
-		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
+		// Copy architecture to solver (always) and evaluator (only if enabled)
+		targets := []agent.AgentType{agent.Solver}
+		if o.isAgentEnabled(agent.Evaluator) {
+			targets = append(targets, agent.Evaluator)
+		} else {
+			o.log("Skipping architecture copy to evaluator — evaluator is disabled")
+		}
+		for _, target := range targets {
 			o.copyMu[target].Lock()
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			if err := os.RemoveAll(dst); err != nil {
@@ -1455,81 +1491,95 @@ func (o *Orchestrator) handleHandoffSolution() error {
 	evalCopyFailed := false
 	reviewCopyFailed := false
 
-	// Copy evaluator targets under evaluator lock to prevent races with
-	// evaluator preCopy which operates on the same directories.
-	o.copyMu[agent.Evaluator].Lock()
-	func() {
-		defer o.copyMu[agent.Evaluator].Unlock()
+	evalEnabled := o.isAgentEnabled(agent.Evaluator)
+	reviewEnabled := o.isAgentEnabled(agent.Reviewer)
 
-		// 1. Copy solution-deliverable to evaluator
-		srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
-		dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
-		if err := os.RemoveAll(dstDeliverable); err != nil {
-			o.log("Error removing old deliverable in evaluator: %v", err)
-			evalCopyFailed = true
-		} else if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
-			o.log("Error creating deliverable dir in evaluator: %v", err)
-			evalCopyFailed = true
-		} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
-			o.log("Error copying deliverable to evaluator: %v", err)
-			evalCopyFailed = true
-		}
+	// Copy evaluator targets under evaluator lock (only if evaluator is enabled)
+	if evalEnabled {
+		o.copyMu[agent.Evaluator].Lock()
+		func() {
+			defer o.copyMu[agent.Evaluator].Unlock()
 
-		// 2. Copy architecture to evaluator
-		dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
-		if err := os.RemoveAll(dstArch); err != nil {
-			o.log("Error removing old architecture in evaluator: %v", err)
-			evalCopyFailed = true
-		} else if err := os.MkdirAll(dstArch, 0755); err != nil {
-			o.log("Error creating architecture dir in evaluator: %v", err)
-			evalCopyFailed = true
-		} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
-			o.log("Error copying architecture to evaluator: %v", err)
-			evalCopyFailed = true
-		}
-	}()
+			// 1. Copy solution-deliverable to evaluator
+			srcDeliverable := filepath.Join(solverDir, "solution-deliverable")
+			dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
+			if err := os.RemoveAll(dstDeliverable); err != nil {
+				o.log("Error removing old deliverable in evaluator: %v", err)
+				evalCopyFailed = true
+			} else if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
+				o.log("Error creating deliverable dir in evaluator: %v", err)
+				evalCopyFailed = true
+			} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
+				o.log("Error copying deliverable to evaluator: %v", err)
+				evalCopyFailed = true
+			}
 
-	// Copy reviewer targets under reviewer lock.
-	o.copyMu[agent.Reviewer].Lock()
-	func() {
-		defer o.copyMu[agent.Reviewer].Unlock()
+			// 2. Copy architecture to evaluator
+			dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
+			if err := os.RemoveAll(dstArch); err != nil {
+				o.log("Error removing old architecture in evaluator: %v", err)
+				evalCopyFailed = true
+			} else if err := os.MkdirAll(dstArch, 0755); err != nil {
+				o.log("Error creating architecture dir in evaluator: %v", err)
+				evalCopyFailed = true
+			} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
+				o.log("Error copying architecture to evaluator: %v", err)
+				evalCopyFailed = true
+			}
+		}()
+	} else {
+		o.log("Skipping evaluator copy during handoff — evaluator is disabled")
+	}
 
-		// 3. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
-		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
-		if err := os.RemoveAll(dstSolution); err != nil {
-			o.log("Error removing old solution in reviewer: %v", err)
-			reviewCopyFailed = true
-		} else if err := os.MkdirAll(dstSolution, 0755); err != nil {
-			o.log("Error creating solution dir in reviewer: %v", err)
-			reviewCopyFailed = true
-		} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
-			o.log("Error copying solution to reviewer: %v", err)
-			reviewCopyFailed = true
-		}
+	// Copy reviewer targets under reviewer lock (only if reviewer is enabled)
+	if reviewEnabled {
+		o.copyMu[agent.Reviewer].Lock()
+		func() {
+			defer o.copyMu[agent.Reviewer].Unlock()
 
-		// 4. Copy architecture to reviewer
-		dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
-		if err := os.RemoveAll(dstArchReview); err != nil {
-			o.log("Error removing old architecture in reviewer: %v", err)
-			reviewCopyFailed = true
-		} else if err := os.MkdirAll(dstArchReview, 0755); err != nil {
-			o.log("Error creating architecture dir in reviewer: %v", err)
-			reviewCopyFailed = true
-		} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
-			o.log("Error copying architecture to reviewer: %v", err)
-			reviewCopyFailed = true
-		}
-	}()
+			// 3. Copy solution source to reviewer (excluding .git/, architecture/, solution-deliverable/)
+			dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
+			if err := os.RemoveAll(dstSolution); err != nil {
+				o.log("Error removing old solution in reviewer: %v", err)
+				reviewCopyFailed = true
+			} else if err := os.MkdirAll(dstSolution, 0755); err != nil {
+				o.log("Error creating solution dir in reviewer: %v", err)
+				reviewCopyFailed = true
+			} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
+				o.log("Error copying solution to reviewer: %v", err)
+				reviewCopyFailed = true
+			}
 
-	// Enqueue only the agents whose copies succeeded.
-	if evalCopyFailed {
+			// 4. Copy architecture to reviewer
+			dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
+			if err := os.RemoveAll(dstArchReview); err != nil {
+				o.log("Error removing old architecture in reviewer: %v", err)
+				reviewCopyFailed = true
+			} else if err := os.MkdirAll(dstArchReview, 0755); err != nil {
+				o.log("Error creating architecture dir in reviewer: %v", err)
+				reviewCopyFailed = true
+			} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
+				o.log("Error copying architecture to reviewer: %v", err)
+				reviewCopyFailed = true
+			}
+		}()
+	} else {
+		o.log("Skipping reviewer copy during handoff — reviewer is disabled")
+	}
+
+	// Enqueue only enabled agents whose copies succeeded.
+	if !evalEnabled {
+		// Already logged above
+	} else if evalCopyFailed {
 		o.log("Skipping start_evaluator due to copy failures during handoff")
 	} else {
 		if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
 			o.log("Error queuing start_evaluator: %v", err)
 		}
 	}
-	if reviewCopyFailed {
+	if !reviewEnabled {
+		// Already logged above
+	} else if reviewCopyFailed {
 		o.log("Skipping start_reviewer due to copy failures during handoff")
 	} else {
 		if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
@@ -1537,7 +1587,8 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		}
 	}
 
-	if evalCopyFailed || reviewCopyFailed {
+	// Only report error if an enabled agent's copy failed
+	if (evalEnabled && evalCopyFailed) || (reviewEnabled && reviewCopyFailed) {
 		return fmt.Errorf("some copy operations failed during handoff")
 	}
 	return nil

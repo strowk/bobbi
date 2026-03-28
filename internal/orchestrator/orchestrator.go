@@ -1293,6 +1293,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 		o.copyMu[agent.Reviewer].Lock()
 		defer o.copyMu[agent.Reviewer].Unlock()
 
+		// Copy architecture to reviewer
 		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
 		if err := os.RemoveAll(dst); err != nil {
 			return fmt.Errorf("remove old architecture in reviewer: %w", err)
@@ -1302,6 +1303,19 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 		}
 		if err := CopyArchitectureContract(archDir, dst); err != nil {
 			return fmt.Errorf("copy architecture to reviewer: %w", err)
+		}
+
+		// Also refresh solution source from solver for robustness during retries
+		solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
+		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
+		if err := os.RemoveAll(dstSolution); err != nil {
+			return fmt.Errorf("remove old solution in reviewer: %w", err)
+		}
+		if err := os.MkdirAll(dstSolution, 0755); err != nil {
+			return fmt.Errorf("create solution dir in reviewer: %w", err)
+		}
+		if err := CopySolutionSource(solverDir, dstSolution); err != nil {
+			return fmt.Errorf("copy solution source to reviewer: %w", err)
 		}
 	}
 	return nil
@@ -1438,7 +1452,8 @@ func gitCommandOutput(dir string, args ...string) (string, error) {
 func (o *Orchestrator) handleHandoffSolution() error {
 	solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
 	archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
-	copyFailed := false
+	evalCopyFailed := false
+	reviewCopyFailed := false
 
 	// Copy evaluator targets under evaluator lock to prevent races with
 	// evaluator preCopy which operates on the same directories.
@@ -1451,26 +1466,26 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		dstDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 		if err := os.RemoveAll(dstDeliverable); err != nil {
 			o.log("Error removing old deliverable in evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		} else if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
 			o.log("Error creating deliverable dir in evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
 			o.log("Error copying deliverable to evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		}
 
 		// 2. Copy architecture to evaluator
 		dstArch := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "architecture")
 		if err := os.RemoveAll(dstArch); err != nil {
 			o.log("Error removing old architecture in evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		} else if err := os.MkdirAll(dstArch, 0755); err != nil {
 			o.log("Error creating architecture dir in evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
 			o.log("Error copying architecture to evaluator: %v", err)
-			copyFailed = true
+			evalCopyFailed = true
 		}
 	}()
 
@@ -1483,41 +1498,47 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
 		if err := os.RemoveAll(dstSolution); err != nil {
 			o.log("Error removing old solution in reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		} else if err := os.MkdirAll(dstSolution, 0755); err != nil {
 			o.log("Error creating solution dir in reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
 			o.log("Error copying solution to reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		}
 
 		// 4. Copy architecture to reviewer
 		dstArchReview := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
 		if err := os.RemoveAll(dstArchReview); err != nil {
 			o.log("Error removing old architecture in reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		} else if err := os.MkdirAll(dstArchReview, 0755); err != nil {
 			o.log("Error creating architecture dir in reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {
 			o.log("Error copying architecture to reviewer: %v", err)
-			copyFailed = true
+			reviewCopyFailed = true
 		}
 	}()
 
-	if copyFailed {
-		o.log("Skipping start_evaluator/start_reviewer due to copy failures during handoff")
-		return fmt.Errorf("copy operations failed during handoff")
+	// Enqueue only the agents whose copies succeeded.
+	if evalCopyFailed {
+		o.log("Skipping start_evaluator due to copy failures during handoff")
+	} else {
+		if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
+			o.log("Error queuing start_evaluator: %v", err)
+		}
+	}
+	if reviewCopyFailed {
+		o.log("Skipping start_reviewer due to copy failures during handoff")
+	} else {
+		if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
+			o.log("Error queuing start_reviewer: %v", err)
+		}
 	}
 
-	// 5. Enqueue start_evaluator
-	if _, err := queue.WriteRequest(o.queuesDir, "start_evaluator", "orchestrator", ""); err != nil {
-		o.log("Error queuing start_evaluator: %v", err)
-	}
-	// 6. Enqueue start_reviewer
-	if _, err := queue.WriteRequest(o.queuesDir, "start_reviewer", "orchestrator", ""); err != nil {
-		o.log("Error queuing start_reviewer: %v", err)
+	if evalCopyFailed || reviewCopyFailed {
+		return fmt.Errorf("some copy operations failed during handoff")
 	}
 	return nil
 }

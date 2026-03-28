@@ -309,7 +309,7 @@ func (m *Manager) createSyncRepo(syncDir string) error {
 	}
 
 	// Create empty lock files
-	for _, name := range []string{"architecture.lock", "solution.lock", "evaluation.lock", "review.lock"} {
+	for _, name := range []string{"architecture.lock.yaml", "solution.lock.yaml", "evaluation.lock.yaml", "review.lock.yaml"} {
 		path := filepath.Join(syncDir, name)
 		if err := os.WriteFile(path, []byte(""), 0644); err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
@@ -337,7 +337,7 @@ func (m *Manager) createSyncRepo(syncDir string) error {
 }
 
 func (m *Manager) lockFileName(agentType agent.AgentType) string {
-	return agent.RepoDir(agentType) + ".lock"
+	return agent.RepoDir(agentType) + ".lock.yaml"
 }
 
 type contentionError struct {

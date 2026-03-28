@@ -1074,6 +1074,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 		}
 		if err := o.syncMgr.PullAgentRepo(agentType); err != nil {
 			o.log("Agent repo pull failed for %s: %v", agentType, err)
+			o.syncMgr.ReleaseLock(agentType)
 			o.handlePreCopyFailure(batch, agentType)
 			return
 		}
@@ -1296,6 +1297,7 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch, preA
 	switch agentType {
 	case agent.Architect:
 		archDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Architect))
+		copyFailed := false
 
 		// Always copy architecture to solver and evaluator repos
 		for _, target := range []agent.AgentType{agent.Solver, agent.Evaluator} {
@@ -1303,16 +1305,26 @@ func (o *Orchestrator) postCopy(agentType agent.AgentType, batch workBatch, preA
 			dst := filepath.Join(o.baseDir, agent.RepoDir(target), "architecture")
 			if err := os.RemoveAll(dst); err != nil {
 				o.log("Error removing old architecture in %s: %v", target, err)
+				copyFailed = true
+				o.copyMu[target].Unlock()
+				continue
 			}
 			if err := os.MkdirAll(dst, 0755); err != nil {
 				o.log("Error creating architecture dir in %s: %v", target, err)
+				copyFailed = true
 				o.copyMu[target].Unlock()
 				continue
 			}
 			if err := CopyArchitectureContract(archDir, dst); err != nil {
 				o.log("Error copying architecture to %s: %v", target, err)
+				copyFailed = true
 			}
 			o.copyMu[target].Unlock()
+		}
+
+		if copyFailed {
+			o.log("Skipping start_solver due to architecture copy failures in postCopy")
+			return
 		}
 
 		// Check if the architect created request_solution_change entries during its session.
@@ -1426,8 +1438,7 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		if err := os.RemoveAll(dstDeliverable); err != nil {
 			o.log("Error removing old deliverable in evaluator: %v", err)
 			copyFailed = true
-		}
-		if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
+		} else if err := os.MkdirAll(dstDeliverable, 0755); err != nil {
 			o.log("Error creating deliverable dir in evaluator: %v", err)
 			copyFailed = true
 		} else if err := CopyDir(srcDeliverable, dstDeliverable); err != nil {
@@ -1440,8 +1451,7 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		if err := os.RemoveAll(dstArch); err != nil {
 			o.log("Error removing old architecture in evaluator: %v", err)
 			copyFailed = true
-		}
-		if err := os.MkdirAll(dstArch, 0755); err != nil {
+		} else if err := os.MkdirAll(dstArch, 0755); err != nil {
 			o.log("Error creating architecture dir in evaluator: %v", err)
 			copyFailed = true
 		} else if err := CopyArchitectureContract(archDir, dstArch); err != nil {
@@ -1460,8 +1470,7 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		if err := os.RemoveAll(dstSolution); err != nil {
 			o.log("Error removing old solution in reviewer: %v", err)
 			copyFailed = true
-		}
-		if err := os.MkdirAll(dstSolution, 0755); err != nil {
+		} else if err := os.MkdirAll(dstSolution, 0755); err != nil {
 			o.log("Error creating solution dir in reviewer: %v", err)
 			copyFailed = true
 		} else if err := CopySolutionSource(solverDir, dstSolution); err != nil {
@@ -1474,8 +1483,7 @@ func (o *Orchestrator) handleHandoffSolution() error {
 		if err := os.RemoveAll(dstArchReview); err != nil {
 			o.log("Error removing old architecture in reviewer: %v", err)
 			copyFailed = true
-		}
-		if err := os.MkdirAll(dstArchReview, 0755); err != nil {
+		} else if err := os.MkdirAll(dstArchReview, 0755); err != nil {
 			o.log("Error creating architecture dir in reviewer: %v", err)
 			copyFailed = true
 		} else if err := CopyArchitectureContract(archDir, dstArchReview); err != nil {

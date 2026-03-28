@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"bobbi/internal/config"
 	"bobbi/internal/orchestrator"
 	"bobbi/internal/queue"
 
@@ -64,10 +65,19 @@ func Up(args []string) error {
 		}
 	}
 
+	// Load configuration
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config validation: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag, *noSparklinesFlag)
+	orch := orchestrator.New(cwd, userPrompt, rawMode, *timeoutFlag, *noSparklinesFlag, cfg)
 
 	// Enable file logging if applicable
 	if enableFileLog {

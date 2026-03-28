@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"bobbi/internal/agent"
+	"bobbi/internal/config"
 	"bobbi/internal/queue"
+	"bobbi/internal/syncmgr"
 )
 
 // maxAgentRetries is the maximum number of times a failed work item will be
@@ -107,6 +109,9 @@ type Orchestrator struct {
 	startTime       time.Time
 	sharedMaxTokens float64 // shared maximum for sparkline normalization
 	sessionCounts   map[agent.AgentType]int            // number of sessions per agent type
+
+	// Synchronization
+	syncMgr *syncmgr.Manager
 }
 
 type workItem struct {
@@ -123,7 +128,7 @@ type workBatch struct {
 	foldedChangeContext string    // Context from request_*_change items folded into a start_* batch
 }
 
-func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool) *Orchestrator {
+func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool, cfg *config.Config) *Orchestrator {
 	info := make(map[agent.AgentType]*AgentInfo)
 	cmu := make(map[agent.AgentType]*sync.Mutex)
 	ls := make(map[agent.AgentType]*agentLogState)
@@ -136,7 +141,11 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 	for _, at := range agent.AllTypes() {
 		sc[at] = 0
 	}
-	return &Orchestrator{
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+
+	orch := &Orchestrator{
 		baseDir:       baseDir,
 		queuesDir:     filepath.Join(baseDir, ".bobbi", "queues"),
 		completedDir:  filepath.Join(baseDir, ".bobbi", "completed"),
@@ -155,6 +164,10 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 		logState:      ls,
 		sessionCounts: sc,
 	}
+
+	orch.syncMgr = syncmgr.New(baseDir, cfg, orch.log)
+
+	return orch
 }
 
 // GetSharedMaxTokens returns the shared maximum token value for sparkline normalization.
@@ -383,7 +396,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.startTime = time.Now()
 	o.mu.Unlock()
 
-	// Step 2: Update agent CLAUDE.md files (auto-managed blocks)
+	// Step 2: Synchronization setup (when enabled)
+	if o.syncMgr.Enabled() {
+		if err := o.syncMgr.Setup(); err != nil {
+			return fmt.Errorf("sync setup: %w", err)
+		}
+		defer o.syncMgr.Cleanup()
+	}
+
+	// Step 3: Update agent CLAUDE.md files (auto-managed blocks)
 	o.updateAgentClaudeMD()
 
 	// Apply time limit (0 means no timeout)
@@ -1032,9 +1053,27 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 		prompt += "\n\nAdditionally, the following feedback was received from other agents:\n\n" + batch.foldedChangeContext
 	}
 
+	// Synchronization: acquire lock and pull agent repo before starting
+	isSynced := o.syncMgr.IsSynced(agentType)
+	if isSynced {
+		if err := o.syncMgr.AcquireLock(agentType); err != nil {
+			o.log("Lock acquisition failed for %s: %v", agentType, err)
+			o.handlePreCopyFailure(batch, agentType)
+			return
+		}
+		if err := o.syncMgr.PullAgentRepo(agentType); err != nil {
+			o.log("Agent repo pull failed for %s: %v", agentType, err)
+			o.handlePreCopyFailure(batch, agentType)
+			return
+		}
+	}
+
 	// Pre-agent: copy relevant content (once per batch)
 	if err := o.preCopy(agentType); err != nil {
 		o.log("Pre-copy failed for %s agent: %v", agentType, err)
+		if isSynced {
+			o.syncMgr.ReleaseLock(agentType)
+		}
 		o.handlePreCopyFailure(batch, agentType)
 		return
 	}
@@ -1073,6 +1112,11 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	var preAgentQueueFiles map[string]bool
 	if agentType == agent.Architect {
 		preAgentQueueFiles = o.snapshotQueueFiles()
+	}
+
+	// Start heartbeat for synchronized agents
+	if isSynced {
+		o.syncMgr.StartHeartbeat(agentType)
 	}
 
 	o.log("Starting %s agent", agentType)
@@ -1161,6 +1205,16 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	info.Status = "idle"
 	info.HasRun = true
 	o.mu.Unlock()
+
+	// Post-agent synchronization for synchronized agents
+	if isSynced {
+		treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr)
+		if treatAsFailed {
+			o.log("Agent %s: sync recovery failed, treating as failed attempt", agentType)
+			o.handleAgentFailure(batch, agentType, batchAttempts)
+			return
+		}
+	}
 
 	if agentErr != nil {
 		o.log("Agent %s error: %v", agentType, agentErr)

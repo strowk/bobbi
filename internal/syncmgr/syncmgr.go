@@ -137,8 +137,6 @@ func (m *Manager) AcquireLock(agentType agent.AgentType) error {
 func (m *Manager) PullAgentRepo(agentType agent.AgentType) error {
 	repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
 	if err := m.gitPullSafe(repoDir); err != nil {
-		// If pull fails, release lock
-		m.ReleaseLock(agentType)
 		return fmt.Errorf("git pull agent repo %s: %w", agentType, err)
 	}
 	return nil

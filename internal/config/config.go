@@ -91,13 +91,13 @@ func (c *Config) GetHeartbeatInterval() time.Duration {
 	return d
 }
 
-// IsSyncedAgent returns true if the given agent repo directory name is in the sync.agents list.
-func (c *Config) IsSyncedAgent(repoDir string) bool {
+// IsSyncedAgent returns true if the given agent type name is in the sync.agents list.
+func (c *Config) IsSyncedAgent(agentType string) bool {
 	if !c.Sync.Enabled {
 		return false
 	}
 	for _, a := range c.Sync.Agents {
-		if a == repoDir {
+		if a == agentType {
 			return true
 		}
 	}

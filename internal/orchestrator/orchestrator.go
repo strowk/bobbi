@@ -1221,7 +1221,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 
 	// Post-agent synchronization for synchronized agents
 	if isSynced {
-		treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr)
+		treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr, opts)
 		if treatAsFailed {
 			o.log("Agent %s: sync recovery failed, treating as failed attempt", agentType)
 			o.handleAgentFailure(batch, agentType, batchAttempts)

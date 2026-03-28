@@ -184,7 +184,7 @@ func (m *Manager) StopHeartbeat(agentType agent.AgentType) {
 // PostAgentSync performs post-agent completion synchronization:
 // porcelain check, commit recovery, push, and lock release.
 // Returns true if the agent should be treated as failed (recovery exhaustion).
-func (m *Manager) PostAgentSync(agentType agent.AgentType, agentExitErr error) bool {
+func (m *Manager) PostAgentSync(agentType agent.AgentType, agentExitErr error, recoveryOpts *agent.StartOptions) bool {
 	m.StopHeartbeat(agentType)
 
 	repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
@@ -201,7 +201,7 @@ func (m *Manager) PostAgentSync(agentType agent.AgentType, agentExitErr error) b
 		recovered := false
 		for attempt := 1; attempt <= 3; attempt++ {
 			m.log("Commit recovery attempt %d/3 for %s", attempt, agentType)
-			m.runRecoveryAgent(agentType, repoDir)
+			m.runRecoveryAgent(agentType, repoDir, recoveryOpts)
 
 			dirty, err = m.isDirty(repoDir)
 			if err != nil {
@@ -548,12 +548,21 @@ func (m *Manager) isDirty(repoDir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-func (m *Manager) runRecoveryAgent(agentType agent.AgentType, repoDir string) {
+func (m *Manager) runRecoveryAgent(agentType agent.AgentType, repoDir string, callerOpts *agent.StartOptions) {
 	prompt := "Your previous session ended with uncommitted changes in this repository. Please review the current state of your working directory (use git status and git diff), and commit all pending changes with an appropriate commit message. Do not make any new changes — only commit what is already there."
 
 	opts := &agent.StartOptions{
 		BaseDir: m.baseDir,
 		LogFunc: m.logFunc,
+	}
+
+	// Forward TUI callbacks from the caller so that recovery session
+	// token usage, tool use counts, and log lines are tracked.
+	if callerOpts != nil {
+		opts.OnTokens = callerOpts.OnTokens
+		opts.OnToolUse = callerOpts.OnToolUse
+		opts.OnLogEntry = callerOpts.OnLogEntry
+		opts.OnSessionID = callerOpts.OnSessionID
 	}
 
 	if err := agent.StartAgent(agentType, repoDir, prompt, opts); err != nil {

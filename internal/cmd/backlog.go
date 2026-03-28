@@ -136,12 +136,17 @@ func backlogAdd(backlogDir string, args []string) error {
 
 	// Handle collisions
 	if _, err := os.Stat(path); err == nil {
+		found := false
 		for i := 2; i < 1000; i++ {
 			filename = fmt.Sprintf("%s-%d.md", slug, i)
 			path = filepath.Join(backlogDir, filename)
 			if _, err := os.Stat(path); os.IsNotExist(err) {
+				found = true
 				break
 			}
+		}
+		if !found {
+			return fmt.Errorf("could not find a free filename for slug %q after 998 attempts", slug)
 		}
 	}
 

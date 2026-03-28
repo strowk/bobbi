@@ -273,9 +273,7 @@ func processEvent(event *claudeEvent, opts *StartOptions) {
 			u := event.Message.Usage
 			input := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
 			output := u.OutputTokens
-			if input > 0 || output > 0 {
-				opts.OnTokens(input, output)
-			}
+			opts.OnTokens(input, output)
 		}
 		// Log content extraction (text, tool_use, thinking)
 		if opts.OnLogEntry != nil && event.Message.Content != nil {

@@ -63,8 +63,7 @@ func (m *Manager) IsSynced(agentType agent.AgentType) bool {
 	if !m.Enabled() {
 		return false
 	}
-	repoDir := agent.RepoDir(agentType)
-	return m.cfg.IsSyncedAgent(repoDir)
+	return m.cfg.IsSyncedAgent(string(agentType))
 }
 
 // Setup generates instance ID and creates sync repo if needed.
@@ -308,10 +307,17 @@ func (m *Manager) createSyncRepo(syncDir string) error {
 		return fmt.Errorf("git init sync repo: %w", err)
 	}
 
-	// Create empty lock files
-	for _, name := range []string{"architecture.lock.yaml", "solution.lock.yaml", "evaluation.lock.yaml", "review.lock.yaml"} {
+	// Create lock files with released-state YAML
+	for _, name := range []string{"architect.lock.yaml", "solver.lock.yaml", "evaluator.lock.yaml", "reviewer.lock.yaml"} {
 		path := filepath.Join(syncDir, name)
-		if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		released := LockFile{
+			Status:      "released",
+			Owner:       "",
+			AcquiredAt:  "",
+			HeartbeatAt: "",
+		}
+		data, _ := yaml.Marshal(&released)
+		if err := os.WriteFile(path, data, 0644); err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
 		}
 	}
@@ -337,7 +343,7 @@ func (m *Manager) createSyncRepo(syncDir string) error {
 }
 
 func (m *Manager) lockFileName(agentType agent.AgentType) string {
-	return agent.RepoDir(agentType) + ".lock.yaml"
+	return string(agentType) + ".lock.yaml"
 }
 
 type contentionError struct {
@@ -402,9 +408,11 @@ func (m *Manager) tryAcquireLock(agentType agent.AgentType, lockFile string) err
 	// 5. Commit
 	// 6. Push
 	if err := m.gitCommitAndPush(syncDir, lockFile, fmt.Sprintf("Acquire %s", lockFile)); err != nil {
-		// 7. Push failed — race condition
+		// 7. Push failed — race condition; reset and signal retry via contention error
 		m.gitReset(syncDir)
-		return m.tryAcquireLock(agentType, lockFile) // retry from step 1
+		return &contentionError{
+			msg: fmt.Sprintf("Push race for %s — will retry", lockFile),
+		}
 	}
 
 	return nil

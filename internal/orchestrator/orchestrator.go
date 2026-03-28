@@ -1289,6 +1289,20 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 		if err := CopyArchitectureContract(archDir, dst); err != nil {
 			return fmt.Errorf("copy architecture to evaluator: %w", err)
 		}
+	case agent.Reviewer:
+		o.copyMu[agent.Reviewer].Lock()
+		defer o.copyMu[agent.Reviewer].Unlock()
+
+		dst := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "architecture")
+		if err := os.RemoveAll(dst); err != nil {
+			return fmt.Errorf("remove old architecture in reviewer: %w", err)
+		}
+		if err := os.MkdirAll(dst, 0755); err != nil {
+			return fmt.Errorf("create architecture dir in reviewer: %w", err)
+		}
+		if err := CopyArchitectureContract(archDir, dst); err != nil {
+			return fmt.Errorf("copy architecture to reviewer: %w", err)
+		}
 	}
 	return nil
 }
@@ -1558,15 +1572,33 @@ func (o *Orchestrator) handleConfirmSolution(item workItem) {
 	o.copyMu[agent.Evaluator].Lock()
 	srcDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	dstOutput := filepath.Join(o.baseDir, "output")
+	copyFailed := false
 	if err := os.RemoveAll(dstOutput); err != nil {
 		o.log("Error removing old output dir: %v", err)
+		copyFailed = true
 	}
-	if err := os.MkdirAll(dstOutput, 0755); err != nil {
-		o.log("Error creating output dir: %v", err)
-	} else if err := CopyDir(srcDeliverable, dstOutput); err != nil {
-		o.log("Error copying deliverable to output: %v", err)
+	if !copyFailed {
+		if err := os.MkdirAll(dstOutput, 0755); err != nil {
+			o.log("Error creating output dir: %v", err)
+			copyFailed = true
+		}
+	}
+	if !copyFailed {
+		if err := CopyDir(srcDeliverable, dstOutput); err != nil {
+			o.log("Error copying deliverable to output: %v", err)
+			copyFailed = true
+		}
 	}
 	o.copyMu[agent.Evaluator].Unlock()
+
+	if copyFailed {
+		o.log("ERROR: Failed to copy deliverable to output — confirm_solution aborted")
+		if err := queue.MarkFailed(item.requestPath, o.failedDir); err != nil {
+			o.log("Error marking confirm_solution failed: %v", err)
+		}
+		atomic.AddInt32(&o.failedCount, 1)
+		return
+	}
 
 	// 2. Move confirm_solution request to completed (it has been processed)
 	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {

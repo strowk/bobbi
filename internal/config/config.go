@@ -53,10 +53,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("sync.agents is required and must be non-empty when sync.enabled is true")
 	}
 	// Validate agent names
-	valid := map[string]bool{"architecture": true, "solution": true, "evaluation": true, "review": true}
+	valid := map[string]bool{"architect": true, "solver": true, "evaluator": true, "reviewer": true}
 	for _, a := range c.Sync.Agents {
 		if !valid[a] {
-			return fmt.Errorf("sync.agents: invalid agent type %q (valid: architecture, solution, evaluation, review)", a)
+			return fmt.Errorf("sync.agents: invalid agent type %q (valid: architect, solver, evaluator, reviewer)", a)
 		}
 	}
 	// Validate durations if provided

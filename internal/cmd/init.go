@@ -183,10 +183,10 @@ func initSyncRepo(cwd, remoteURL string) error {
 
 	// Check for required lock files
 	requiredLocks := []string{
-		"architecture.lock.yaml",
-		"solution.lock.yaml",
-		"evaluation.lock.yaml",
-		"review.lock.yaml",
+		"architect.lock.yaml",
+		"solver.lock.yaml",
+		"evaluator.lock.yaml",
+		"reviewer.lock.yaml",
 	}
 
 	createdAny := false

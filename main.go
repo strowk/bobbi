@@ -27,7 +27,7 @@ func main() {
 		fmt.Printf("bobbi %s built %s\n", gitHash, buildDate)
 		os.Exit(0)
 	case "init":
-		err = cmd.Init()
+		err = cmd.Init(os.Args[2:])
 	case "up":
 		err = cmd.Up(os.Args[2:])
 	case "mcp":

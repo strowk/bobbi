@@ -680,6 +680,12 @@ func (o *Orchestrator) poll() {
 // completing the request and cleaning up the dispatched entry when done.
 // If the handler returns an error, the request is retried using in-memory
 // retry tracking (similar to handlePreCopyFailure) or moved to failed/.
+//
+// NOTE: Retry counts are tracked in-memory (retryCount map), not via the YAML
+// attempts field used for agent process retries. This means handoff retry counts
+// do not survive an orchestrator restart. This is acceptable because handoff is
+// a fast orchestrator-internal operation (file copy), not a long-running agent
+// session, so surviving restarts is less critical than for agent retries.
 func (o *Orchestrator) handleDirectRequest(item workItem, handler func() error) {
 	defer o.wg.Done()
 	if err := handler(); err != nil {
@@ -1643,7 +1649,52 @@ func (o *Orchestrator) PrintRunSummary(w io.Writer) {
 }
 
 func (o *Orchestrator) handleConfirmSolution(item workItem) {
-	// 1. Copy solution-deliverable/ to output/
+	// Retry the copy operation up to maxAgentRetries times (CONTRACT Section 5.3).
+	// confirm_solution is processed synchronously in poll() so it cannot use the
+	// async handleDirectRequest path; we implement retry inline instead.
+	var lastErr error
+	for attempt := 1; attempt <= maxAgentRetries; attempt++ {
+		lastErr = o.copyDeliverableToOutput()
+		if lastErr == nil {
+			break
+		}
+		o.log("confirm_solution copy attempt %d/%d failed: %v", attempt, maxAgentRetries, lastErr)
+		if attempt < maxAgentRetries {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+	}
+
+	if lastErr != nil {
+		o.log("ERROR: Failed to copy deliverable to output after %d attempts — confirm_solution failed", maxAgentRetries)
+		if err := queue.MarkFailed(item.requestPath, o.failedDir); err != nil {
+			o.log("Error marking confirm_solution failed: %v", err)
+		}
+		atomic.AddInt32(&o.failedCount, 1)
+		return
+	}
+
+	// Move confirm_solution request to completed (it has been processed)
+	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
+		o.log("Error marking confirm_solution completed: %v", err)
+	}
+	atomic.AddInt32(&o.completedCount, 1)
+
+	// Log confirmation
+	o.log("========================================")
+	o.log("Solution confirmed and delivered!")
+	o.log("Output available in: output/")
+	o.log("========================================")
+
+	// Signal orchestrator to enter graceful shutdown
+	o.mu.Lock()
+	o.shutdownReason = "confirm_solution"
+	o.mu.Unlock()
+	o.doneOnce.Do(func() { close(o.done) })
+}
+
+// copyDeliverableToOutput copies solution-deliverable/ to output/.
+// Returns an error if any step fails, allowing the caller to retry.
+func (o *Orchestrator) copyDeliverableToOutput() error {
 	// When evaluator is disabled, evaluation/solution-deliverable/ is never
 	// populated, so fall back to copying from solution/solution-deliverable/.
 	var srcDeliverable string
@@ -1656,50 +1707,17 @@ func (o *Orchestrator) handleConfirmSolution(item workItem) {
 	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
 	// which writes to the same evaluator directory concurrently.
 	o.copyMu[agent.Evaluator].Lock()
+	defer o.copyMu[agent.Evaluator].Unlock()
+
 	dstOutput := filepath.Join(o.baseDir, "output")
-	copyFailed := false
 	if err := os.RemoveAll(dstOutput); err != nil {
-		o.log("Error removing old output dir: %v", err)
-		copyFailed = true
+		return fmt.Errorf("remove old output dir: %w", err)
 	}
-	if !copyFailed {
-		if err := os.MkdirAll(dstOutput, 0755); err != nil {
-			o.log("Error creating output dir: %v", err)
-			copyFailed = true
-		}
+	if err := os.MkdirAll(dstOutput, 0755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
 	}
-	if !copyFailed {
-		if err := CopyDir(srcDeliverable, dstOutput); err != nil {
-			o.log("Error copying deliverable to output: %v", err)
-			copyFailed = true
-		}
+	if err := CopyDir(srcDeliverable, dstOutput); err != nil {
+		return fmt.Errorf("copy deliverable to output: %w", err)
 	}
-	o.copyMu[agent.Evaluator].Unlock()
-
-	if copyFailed {
-		o.log("ERROR: Failed to copy deliverable to output — confirm_solution aborted")
-		if err := queue.MarkFailed(item.requestPath, o.failedDir); err != nil {
-			o.log("Error marking confirm_solution failed: %v", err)
-		}
-		atomic.AddInt32(&o.failedCount, 1)
-		return
-	}
-
-	// 2. Move confirm_solution request to completed (it has been processed)
-	if err := queue.MarkCompleted(item.requestPath, o.completedDir); err != nil {
-		o.log("Error marking confirm_solution completed: %v", err)
-	}
-	atomic.AddInt32(&o.completedCount, 1)
-
-	// 3. Log confirmation
-	o.log("========================================")
-	o.log("Solution confirmed and delivered!")
-	o.log("Output available in: output/")
-	o.log("========================================")
-
-	// 4. Signal orchestrator to enter graceful shutdown
-	o.mu.Lock()
-	o.shutdownReason = "confirm_solution"
-	o.mu.Unlock()
-	o.doneOnce.Do(func() { close(o.done) })
+	return nil
 }

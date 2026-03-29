@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"bobbi/internal/agent"
@@ -37,6 +38,10 @@ func MCP(args []string) error {
 
 	if queuesDir == "" {
 		return fmt.Errorf("--queues-dir is required: bobbi mcp --agent <type> --queues-dir <path>")
+	}
+
+	if !filepath.IsAbs(queuesDir) {
+		return fmt.Errorf("--queues-dir must be an absolute path, got: %s", queuesDir)
 	}
 
 	return mcpserver.Serve(agent.AgentType(agentType), queuesDir, os.Stdin, os.Stdout)

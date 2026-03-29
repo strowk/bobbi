@@ -114,6 +114,19 @@ func backlogAdd(backlogDir string, args []string) error {
 		return fmt.Errorf("backlog item cannot be empty")
 	}
 
+	// Extract the first line as the title and ensure it becomes a # heading
+	// so parseBacklogFile can extract the display title (CONTRACT: INTERFACES.md "Backlog").
+	firstLine := strings.SplitN(body, "\n", 2)[0]
+	if !strings.HasPrefix(strings.TrimSpace(firstLine), "# ") {
+		// Prepend the first line as a heading; keep the rest of the body after it
+		parts := strings.SplitN(body, "\n", 2)
+		if len(parts) > 1 {
+			body = "# " + strings.TrimSpace(parts[0]) + "\n" + parts[1]
+		} else {
+			body = "# " + strings.TrimSpace(parts[0])
+		}
+	}
+
 	fm := backlogFrontmatter{
 		Created: time.Now().UTC(),
 	}
@@ -124,9 +137,8 @@ func backlogAdd(backlogDir string, args []string) error {
 
 	content := fmt.Sprintf("---\n%s---\n%s\n", string(fmData), body)
 
-	// Derive filename from first line
-	firstLine := strings.SplitN(body, "\n", 2)[0]
-	slug := slugify(firstLine)
+	// Derive filename slug from the first line (without the # prefix)
+	slug := slugify(strings.TrimPrefix(strings.TrimSpace(firstLine), "# "))
 	if slug == "" {
 		slug = "backlog-item"
 	}
@@ -193,7 +205,10 @@ func backlogPromote(backlogDir, queuesDir string, filename string) error {
 		return fmt.Errorf("unknown backlog item type: %s", itemType)
 	}
 
-	_, err = queue.WriteRequest(queuesDir, reqType, "user", item.Body)
+	// Strip the leading # heading from the body before sending as additional_context,
+	// since the heading is display metadata, not actionable content.
+	context := stripLeadingHeading(item.Body)
+	_, err = queue.WriteRequest(queuesDir, reqType, "user", context)
 	if err != nil {
 		return fmt.Errorf("write queue request: %w", err)
 	}
@@ -290,6 +305,18 @@ func parseBacklogFile(path string) (backlogItem, error) {
 		Body:        body,
 		Title:       title,
 	}, nil
+}
+
+// stripLeadingHeading removes the first # heading line from a markdown body.
+func stripLeadingHeading(body string) string {
+	lines := strings.SplitN(body, "\n", 2)
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "# ") {
+		if len(lines) > 1 {
+			return strings.TrimSpace(lines[1])
+		}
+		return ""
+	}
+	return body
 }
 
 // slugify converts a string into a URL-friendly slug.

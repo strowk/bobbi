@@ -90,12 +90,17 @@ func Up(args []string) error {
 
 	if rawMode {
 		// Raw mode: signal handling + direct orchestrator run
-		sigCh := make(chan os.Signal, 1)
+		sigCh := make(chan os.Signal, 2)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sigCh
-			fmt.Fprintf(os.Stderr, "\n[bobbi] Received signal, shutting down...\n")
+			fmt.Fprintf(os.Stderr, "\n[bobbi] Received signal, shutting down gracefully...\n")
 			cancel()
+			// Wait for second signal — forced shutdown
+			<-sigCh
+			fmt.Fprintf(os.Stderr, "\n[bobbi] Forced shutdown — releasing all locks...\n")
+			orch.ForceReleaseLocks()
+			os.Exit(1)
 		}()
 
 		fmt.Fprintln(os.Stderr, "[bobbi] Starting orchestrator (raw mode)...")

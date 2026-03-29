@@ -153,6 +153,11 @@ func (m TUIModel) updateMainView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.shuttingDown {
 			m.shuttingDown = true
 			m.cancel()
+		} else {
+			// Second ctrl+c/q while already shutting down — force quit
+			m.orch.ForceReleaseLocks()
+			m.quitting = true
+			return m, tea.Quit
 		}
 		return m, nil
 	case "up", "k":
@@ -184,6 +189,11 @@ func (m TUIModel) updateDetailView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.shuttingDown {
 			m.shuttingDown = true
 			m.cancel()
+		} else {
+			// Second ctrl+c while already shutting down — force quit
+			m.orch.ForceReleaseLocks()
+			m.quitting = true
+			return m, tea.Quit
 		}
 		return m, nil
 	case "esc", "q":

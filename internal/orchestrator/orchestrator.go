@@ -1594,6 +1594,11 @@ func (o *Orchestrator) handleHandoffSolution() error {
 	return nil
 }
 
+// ForceReleaseLocks immediately releases all held sync locks (for forced shutdown).
+func (o *Orchestrator) ForceReleaseLocks() {
+	o.syncMgr.ReleaseAllLocks()
+}
+
 // PrintRunSummary writes a plain text run summary to the given writer.
 func (o *Orchestrator) PrintRunSummary(w io.Writer) {
 	reason := o.GetShutdownReason()
@@ -1638,11 +1643,19 @@ func (o *Orchestrator) PrintRunSummary(w io.Writer) {
 }
 
 func (o *Orchestrator) handleConfirmSolution(item workItem) {
-	// 1. Copy evaluation/solution-deliverable/ to output/
+	// 1. Copy solution-deliverable/ to output/
+	// When evaluator is disabled, evaluation/solution-deliverable/ is never
+	// populated, so fall back to copying from solution/solution-deliverable/.
+	var srcDeliverable string
+	if o.isAgentEnabled(agent.Evaluator) {
+		srcDeliverable = filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
+	} else {
+		o.log("Evaluator is disabled — copying deliverable from solution/ instead of evaluation/")
+		srcDeliverable = filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "solution-deliverable")
+	}
 	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
 	// which writes to the same evaluator directory concurrently.
 	o.copyMu[agent.Evaluator].Lock()
-	srcDeliverable := filepath.Join(o.baseDir, agent.RepoDir(agent.Evaluator), "solution-deliverable")
 	dstOutput := filepath.Join(o.baseDir, "output")
 	copyFailed := false
 	if err := os.RemoveAll(dstOutput); err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"bobbi/internal/agent"
 	"bobbi/internal/config"
+	gh "bobbi/internal/github"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -582,6 +583,377 @@ func (m *Manager) pushAgentRepo(repoDir string, agentType agent.AgentType) error
 		gitCmd(repoDir, "pull", "--rebase")
 	}
 	return fmt.Errorf("push failed after 3 attempts")
+}
+
+// --- Green CI methods ---
+
+// IsGreenCI returns true if Green CI is enabled for the given agent type.
+func (m *Manager) IsGreenCI(agentType agent.AgentType) bool {
+	return m.cfg.IsGreenCI(string(agentType))
+}
+
+// CreateFeatureBranch creates and switches to a feature branch for Green CI.
+// Must be called after lock acquisition and agent repo pull.
+// Returns the feature branch name.
+func (m *Manager) CreateFeatureBranch(agentType agent.AgentType) (string, error) {
+	repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
+	trunk := m.cfg.GetTrunkBranch(string(agentType))
+
+	// Ensure we're on the trunk branch
+	currentBranch, err := gitOutput(repoDir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("get current branch: %w", err)
+	}
+	currentBranch = strings.TrimSpace(currentBranch)
+	if currentBranch != trunk {
+		if err := gitCmd(repoDir, "checkout", trunk); err != nil {
+			return "", fmt.Errorf("checkout trunk %s: %w", trunk, err)
+		}
+		if err := m.gitPullSafe(repoDir); err != nil {
+			m.log("Warning: pull after trunk checkout failed: %v", err)
+		}
+	}
+
+	// Create feature branch name: <identity>/<YYYY_MM_DDTHH_MM_SSZ>
+	now := time.Now().UTC()
+	dateTime := fmt.Sprintf("%04d_%02d_%02dT%02d_%02d_%02dZ",
+		now.Year(), now.Month(), now.Day(),
+		now.Hour(), now.Minute(), now.Second())
+	branchName := m.identity + "/" + dateTime
+
+	if err := gitCmd(repoDir, "checkout", "-b", branchName); err != nil {
+		return "", fmt.Errorf("create feature branch %s: %w", branchName, err)
+	}
+
+	m.log("Created feature branch %s for %s", branchName, agentType)
+	return branchName, nil
+}
+
+// GreenCIResult represents the outcome of the Green CI flow.
+type GreenCIResult struct {
+	TreatAsFailed bool   // true if the request should be treated as failed
+	PRNumber      int    // the PR number (for recovery tracking)
+	FeatureBranch string // the feature branch name
+}
+
+// PostAgentGreenCI performs the Green CI post-agent workflow:
+// push feature branch, create PR, validate, merge or recover.
+// Returns whether the agent should be treated as failed.
+// The caller must handle attempt tracking and retry logic.
+func (m *Manager) PostAgentGreenCI(
+	agentType agent.AgentType,
+	agentExitErr error,
+	recoveryOpts *agent.StartOptions,
+	featureBranch string,
+	currentAttempts int,
+	maxAttempts int,
+) (treatAsFailed bool) {
+	m.StopHeartbeat(agentType)
+
+	repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
+	trunk := m.cfg.GetTrunkBranch(string(agentType))
+
+	// Porcelain check + commit recovery
+	dirty, err := m.isDirty(repoDir)
+	if err != nil {
+		m.log("Error checking porcelain for %s: %v", agentType, err)
+	}
+
+	porcelainFailed := false
+	if dirty {
+		recovered := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			m.log("Commit recovery attempt %d/3 for %s", attempt, agentType)
+			m.runRecoveryAgent(agentType, repoDir, recoveryOpts)
+			dirty, err = m.isDirty(repoDir)
+			if err != nil {
+				m.log("Error checking porcelain after recovery %d for %s: %v", attempt, agentType, err)
+				continue
+			}
+			if !dirty {
+				recovered = true
+				m.log("Commit recovery succeeded for %s on attempt %d", agentType, attempt)
+				break
+			}
+		}
+		if !recovered {
+			porcelainFailed = true
+			m.log("WARNING: Commit recovery failed after 3 attempts for %s", agentType)
+		}
+	}
+
+	// Push feature branch (even if porcelain failed, push whatever committed state exists)
+	if hasRemote(repoDir) {
+		if err := gitCmd(repoDir, "push", "-u", "origin", featureBranch); err != nil {
+			m.log("Error pushing feature branch %s: %v", featureBranch, err)
+		}
+	}
+
+	// If porcelain failed, no PR — release lock and fail
+	if porcelainFailed {
+		m.log("Porcelain failed for %s — no PR created, releasing lock", agentType)
+		m.ReleaseLock(agentType)
+		return true
+	}
+
+	// Get remote URL for owner/repo extraction
+	owner, repo := m.getOwnerRepo(repoDir)
+	if owner == "" || repo == "" {
+		m.log("ERROR: Could not determine owner/repo for %s", agentType)
+		m.ReleaseLock(agentType)
+		return true
+	}
+
+	// Get the head SHA we just pushed
+	pushedSHA, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		m.log("ERROR: Could not get HEAD SHA: %v", err)
+		m.ReleaseLock(agentType)
+		return true
+	}
+	pushedSHA = strings.TrimSpace(pushedSHA)
+
+	ghClient := gh.NewClient()
+
+	// Create PR
+	pr, err := ghClient.CreatePR(owner, repo,
+		fmt.Sprintf("Green CI: %s", featureBranch),
+		featureBranch, trunk,
+		fmt.Sprintf("Automated PR from bobbi Green CI for %s agent", agentType))
+	if err != nil {
+		m.log("ERROR: Failed to create PR: %v", err)
+		m.ReleaseLock(agentType)
+		return true
+	}
+	m.log("Created PR #%d for %s (%s -> %s)", pr.Number, agentType, featureBranch, trunk)
+
+	// Restart heartbeat for validation polling
+	m.StartHeartbeat(agentType)
+
+	// Validate and potentially recover
+	gci := m.cfg.GetGreenCIConfig(string(agentType))
+	success := m.validateAndMergePR(agentType, ghClient, owner, repo, pr.Number, pushedSHA, gci.RequiredChecks, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+
+	m.StopHeartbeat(agentType)
+
+	if success {
+		// Merge succeeded — checkout trunk, pull, release lock
+		if err := gitCmd(repoDir, "checkout", trunk); err != nil {
+			m.log("Error checking out trunk %s: %v", trunk, err)
+		}
+		if err := m.gitPullSafe(repoDir); err != nil {
+			m.log("Error pulling trunk after merge: %v", err)
+		}
+		m.ReleaseLock(agentType)
+		return false
+	}
+
+	// Validation failed and retries exhausted — close PR, switch to trunk, release lock
+	m.log("Green CI validation failed for %s — closing PR #%d", agentType, pr.Number)
+	if err := ghClient.ClosePR(owner, repo, pr.Number); err != nil {
+		m.log("Error closing PR #%d: %v", pr.Number, err)
+	}
+	if err := gitCmd(repoDir, "checkout", trunk); err != nil {
+		m.log("Error checking out trunk after failure: %v", err)
+	}
+	m.ReleaseLock(agentType)
+	return true
+}
+
+// validateAndMergePR polls the PR for validation and handles recovery on failure.
+// Returns true if the PR was successfully merged.
+func (m *Manager) validateAndMergePR(
+	agentType agent.AgentType,
+	ghClient *gh.Client,
+	owner, repo string,
+	prNumber int,
+	expectedSHA string,
+	requiredChecks []string,
+	featureBranch, trunk string,
+	recoveryOpts *agent.StartOptions,
+	currentAttempts, maxAttempts int,
+) bool {
+	for attempt := currentAttempts; attempt <= maxAttempts; attempt++ {
+		valid, err := m.pollPRValidation(agentType, ghClient, owner, repo, prNumber, expectedSHA, requiredChecks)
+		if err != nil {
+			m.log("PR validation error for %s: %v", agentType, err)
+		}
+
+		if valid {
+			// Merge the PR
+			_, err := ghClient.MergePR(owner, repo, prNumber)
+			if err != nil {
+				m.log("Error merging PR #%d: %v", prNumber, err)
+				return false
+			}
+			m.log("Merged PR #%d for %s", prNumber, agentType)
+			return true
+		}
+
+		// Validation failed — check if we can retry
+		if attempt >= maxAttempts {
+			m.log("Green CI: max attempts (%d) exhausted for %s", maxAttempts, agentType)
+			return false
+		}
+
+		// Run recovery agent
+		m.log("Green CI: running recovery agent for %s (attempt %d/%d)", agentType, attempt+1, maxAttempts)
+		repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
+
+		recoveryPrompt := fmt.Sprintf(`The CI checks on your pull request failed. Your changes were pushed to a feature branch and a pull request was created, but it cannot be merged because CI validation did not pass.
+
+Pull request number: %d
+Target branch: %s
+
+Please use the `+"`gh`"+` CLI to inspect the pull request and failed checks:
+- Run `+"`gh pr view %d`"+` to see the PR status
+- Run `+"`gh pr checks %d`"+` to see which checks failed
+- Run `+"`gh run list --branch %s`"+` to find the workflow run
+- Run `+"`gh run view <run_id> --log-failed`"+` to see the failed step logs
+
+Diagnose the failures and fix the code so that CI passes. Commit and push your fixes to the current branch.`,
+			prNumber, trunk, prNumber, prNumber, featureBranch)
+
+		opts := &agent.StartOptions{
+			BaseDir: m.baseDir,
+			LogFunc: m.logFunc,
+		}
+		if recoveryOpts != nil {
+			opts.OnTokens = recoveryOpts.OnTokens
+			opts.OnToolUse = recoveryOpts.OnToolUse
+			opts.OnLogEntry = recoveryOpts.OnLogEntry
+			opts.OnSessionID = recoveryOpts.OnSessionID
+		}
+
+		if err := agent.StartAgent(agentType, repoDir, recoveryPrompt, opts); err != nil {
+			m.log("Recovery agent for %s failed: %v", agentType, err)
+		}
+
+		// Porcelain check + commit recovery after recovery agent
+		dirty, err := m.isDirty(repoDir)
+		if err != nil {
+			m.log("Error checking porcelain after recovery agent for %s: %v", agentType, err)
+		}
+		if dirty {
+			recovered := false
+			for recAttempt := 1; recAttempt <= 3; recAttempt++ {
+				m.log("Post-recovery commit recovery %d/3 for %s", recAttempt, agentType)
+				m.runRecoveryAgent(agentType, repoDir, recoveryOpts)
+				dirty, err = m.isDirty(repoDir)
+				if err == nil && !dirty {
+					recovered = true
+					break
+				}
+			}
+			if !recovered {
+				m.log("WARNING: Post-recovery commit recovery failed for %s", agentType)
+			}
+		}
+
+		// Push recovery changes
+		if hasRemote(repoDir) {
+			if err := gitCmd(repoDir, "push"); err != nil {
+				m.log("Error pushing recovery changes for %s: %v", agentType, err)
+			}
+		}
+
+		// Update expected SHA for next validation round
+		newSHA, err := gitOutput(repoDir, "rev-parse", "HEAD")
+		if err == nil {
+			expectedSHA = strings.TrimSpace(newSHA)
+		}
+	}
+
+	return false
+}
+
+// pollPRValidation polls the PR until validation succeeds or fails.
+// Returns (true, nil) on success, (false, nil) on definite failure, or (false, err) on error.
+func (m *Manager) pollPRValidation(
+	agentType agent.AgentType,
+	ghClient *gh.Client,
+	owner, repo string,
+	prNumber int,
+	expectedSHA string,
+	requiredChecks []string,
+) (bool, error) {
+	pollInterval := 15 * time.Second
+
+	for {
+		time.Sleep(pollInterval)
+
+		// Check mergeable status
+		pr, err := ghClient.GetPR(owner, repo, prNumber)
+		if err != nil {
+			return false, fmt.Errorf("get PR #%d: %w", prNumber, err)
+		}
+
+		// Mergeable: null = retry, true = proceed, false = fail
+		if pr.Mergeable == nil {
+			m.log("PR #%d mergeable status is null, continuing to poll...", prNumber)
+			continue
+		}
+		if !*pr.Mergeable {
+			m.log("PR #%d is not mergeable", prNumber)
+			return false, nil
+		}
+
+		// Check head SHA matches what we pushed
+		if pr.Head.SHA != expectedSHA {
+			m.log("PR #%d head SHA mismatch: expected %s, got %s", prNumber, expectedSHA, pr.Head.SHA)
+			return false, nil
+		}
+
+		// Check required check runs
+		checkRuns, err := ghClient.GetCheckRuns(owner, repo, expectedSHA)
+		if err != nil {
+			return false, fmt.Errorf("get check runs: %w", err)
+		}
+
+		// Build map of check runs by name
+		checkMap := make(map[string]*gh.CheckRun)
+		for i := range checkRuns.CheckRuns {
+			checkMap[checkRuns.CheckRuns[i].Name] = &checkRuns.CheckRuns[i]
+		}
+
+		allPassed := true
+		anyPending := false
+		for _, name := range requiredChecks {
+			cr, ok := checkMap[name]
+			if !ok {
+				// Check not found yet — keep polling
+				anyPending = true
+				continue
+			}
+			if cr.Status != "completed" {
+				anyPending = true
+				continue
+			}
+			if cr.Conclusion != "success" {
+				m.log("Check %q failed with conclusion %q", name, cr.Conclusion)
+				return false, nil
+			}
+		}
+
+		if anyPending {
+			m.log("Some required checks still pending for PR #%d, continuing to poll...", prNumber)
+			continue
+		}
+
+		if allPassed {
+			m.log("All required checks passed for PR #%d", prNumber)
+			return true, nil
+		}
+	}
+}
+
+// getOwnerRepo extracts the owner and repo from the agent's remote URL.
+func (m *Manager) getOwnerRepo(repoDir string) (string, string) {
+	remoteURL, err := gitOutput(repoDir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", ""
+	}
+	return gh.OwnerRepo(strings.TrimSpace(remoteURL))
 }
 
 // --- Git helpers ---

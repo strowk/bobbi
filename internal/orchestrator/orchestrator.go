@@ -1102,6 +1102,8 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 
 	// Synchronization: acquire lock and pull agent repo before starting
 	isSynced := o.syncMgr.IsSynced(agentType)
+	isGreenCI := o.syncMgr.IsGreenCI(agentType)
+	var featureBranch string
 	if isSynced {
 		if err := o.syncMgr.AcquireLock(agentType); err != nil {
 			o.log("Lock acquisition failed for %s: %v", agentType, err)
@@ -1113,6 +1115,17 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 			o.syncMgr.ReleaseLock(agentType)
 			o.handlePreCopyFailure(batch, agentType)
 			return
+		}
+		// Create feature branch for Green CI
+		if isGreenCI {
+			var err error
+			featureBranch, err = o.syncMgr.CreateFeatureBranch(agentType)
+			if err != nil {
+				o.log("Feature branch creation failed for %s: %v", agentType, err)
+				o.syncMgr.ReleaseLock(agentType)
+				o.handlePreCopyFailure(batch, agentType)
+				return
+			}
 		}
 	}
 
@@ -1257,11 +1270,20 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 
 	// Post-agent synchronization for synchronized agents
 	if isSynced {
-		treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr, opts)
-		if treatAsFailed {
-			o.log("Agent %s: sync recovery failed, treating as failed attempt", agentType)
-			o.handleAgentFailure(batch, agentType, batchAttempts)
-			return
+		if isGreenCI {
+			treatAsFailed := o.syncMgr.PostAgentGreenCI(agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
+			if treatAsFailed {
+				o.log("Agent %s: Green CI failed, treating as failed attempt", agentType)
+				o.handleAgentFailure(batch, agentType, maxAgentRetries) // exhausted
+				return
+			}
+		} else {
+			treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr, opts)
+			if treatAsFailed {
+				o.log("Agent %s: sync recovery failed, treating as failed attempt", agentType)
+				o.handleAgentFailure(batch, agentType, batchAttempts)
+				return
+			}
 		}
 	}
 

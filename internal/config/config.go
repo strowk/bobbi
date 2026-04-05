@@ -20,13 +20,22 @@ type AgentsConfig struct {
 	Reviewer  *AgentEnabledConfig `yaml:"reviewer"`
 }
 
+// GreenCIConfig holds Green CI settings for a single agent type.
+type GreenCIConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Provider       string   `yaml:"provider"`
+	TrunkBranch    string   `yaml:"trunk_branch"`
+	RequiredChecks []string `yaml:"required_checks"`
+}
+
 // SyncConfig holds synchronization settings from .bobbi/config.yaml.
 type SyncConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	OwnerPrefix       string   `yaml:"owner_prefix"`
-	StaleThreshold    string   `yaml:"stale_threshold"`
-	HeartbeatInterval string   `yaml:"heartbeat_interval"`
-	Agents            []string `yaml:"agents"`
+	Enabled           bool                       `yaml:"enabled"`
+	OwnerPrefix       string                     `yaml:"owner_prefix"`
+	StaleThreshold    string                     `yaml:"stale_threshold"`
+	HeartbeatInterval string                     `yaml:"heartbeat_interval"`
+	Agents            []string                   `yaml:"agents"`
+	GreenCI           map[string]*GreenCIConfig  `yaml:"green_ci"`
 }
 
 // Config represents the full .bobbi/config.yaml file.
@@ -100,6 +109,36 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("sync.agents: invalid agent type %q (valid: architect, solver, evaluator, reviewer)", a)
 		}
 	}
+	// Validate Green CI settings
+	for agentName, gci := range c.Sync.GreenCI {
+		if gci == nil || !gci.Enabled {
+			continue
+		}
+		// Agent must be a valid agent name
+		if !valid[agentName] {
+			return fmt.Errorf("sync.green_ci.%s: not a valid agent type (valid: architect, solver, evaluator, reviewer)", agentName)
+		}
+		// Agent must be in sync.agents
+		inSyncAgents := false
+		for _, a := range c.Sync.Agents {
+			if a == agentName {
+				inSyncAgents = true
+				break
+			}
+		}
+		if !inSyncAgents {
+			return fmt.Errorf("sync.green_ci.%s: agent is not in sync.agents", agentName)
+		}
+		// Provider must be "github"
+		if gci.Provider != "github" {
+			return fmt.Errorf("sync.green_ci.%s: unsupported provider %q (only \"github\" is supported)", agentName, gci.Provider)
+		}
+		// required_checks must be present and non-empty
+		if len(gci.RequiredChecks) == 0 {
+			return fmt.Errorf("sync.green_ci.%s: required_checks must be present and non-empty when green_ci is enabled", agentName)
+		}
+	}
+
 	// Validate durations if provided
 	if c.Sync.StaleThreshold != "" {
 		if _, err := time.ParseDuration(c.Sync.StaleThreshold); err != nil {
@@ -162,4 +201,30 @@ func (c *Config) IsSyncedAgent(agentType string) bool {
 		}
 	}
 	return false
+}
+
+// IsGreenCI returns true if Green CI is enabled for the given agent type.
+func (c *Config) IsGreenCI(agentType string) bool {
+	if !c.Sync.Enabled || c.Sync.GreenCI == nil {
+		return false
+	}
+	gci, ok := c.Sync.GreenCI[agentType]
+	return ok && gci != nil && gci.Enabled
+}
+
+// GetGreenCIConfig returns the Green CI config for the given agent type, or nil.
+func (c *Config) GetGreenCIConfig(agentType string) *GreenCIConfig {
+	if c.Sync.GreenCI == nil {
+		return nil
+	}
+	return c.Sync.GreenCI[agentType]
+}
+
+// GetTrunkBranch returns the trunk branch for the given agent's Green CI config (default "main").
+func (c *Config) GetTrunkBranch(agentType string) string {
+	gci := c.GetGreenCIConfig(agentType)
+	if gci == nil || gci.TrunkBranch == "" {
+		return "main"
+	}
+	return gci.TrunkBranch
 }

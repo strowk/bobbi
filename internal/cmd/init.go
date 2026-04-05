@@ -95,7 +95,7 @@ func initAgentRepoFromClone(repoDir string, agentType agent.AgentType, remoteURL
 	// Check/update CLAUDE.md
 	claudeMDPath := filepath.Join(claudeDir, "CLAUDE.md")
 	existing, err := os.ReadFile(claudeMDPath)
-	if err != nil || string(existing) != expectedClaudeMD {
+	if err != nil || normalizeLineEndings(string(existing)) != normalizeLineEndings(expectedClaudeMD) {
 		if err := os.WriteFile(claudeMDPath, []byte(expectedClaudeMD), 0644); err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func initAgentRepoFromClone(repoDir string, agentType agent.AgentType, remoteURL
 	// Check/update .gitignore
 	gitignorePath := filepath.Join(repoDir, ".gitignore")
 	existing, err = os.ReadFile(gitignorePath)
-	if err != nil || string(existing) != expectedGitignore {
+	if err != nil || normalizeLineEndings(string(existing)) != normalizeLineEndings(expectedGitignore) {
 		if err := os.WriteFile(gitignorePath, []byte(expectedGitignore), 0644); err != nil {
 			return err
 		}
@@ -307,4 +307,9 @@ func gitInit(dir string) error {
 		}
 	}
 	return nil
+}
+
+// normalizeLineEndings converts \r\n to \n for platform-independent comparison.
+func normalizeLineEndings(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }

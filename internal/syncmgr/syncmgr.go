@@ -1,6 +1,7 @@
 package syncmgr
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -107,8 +108,9 @@ func (m *Manager) Cleanup() {
 }
 
 // AcquireLock acquires the lock for the given agent type.
-// Blocks until the lock is acquired (with exponential backoff on contention).
-func (m *Manager) AcquireLock(agentType agent.AgentType) error {
+// Blocks until the lock is acquired (with exponential backoff on contention)
+// or the context is cancelled.
+func (m *Manager) AcquireLock(ctx context.Context, agentType agent.AgentType) error {
 	lockFile := m.lockFileName(agentType)
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
@@ -125,7 +127,11 @@ func (m *Manager) AcquireLock(agentType agent.AgentType) error {
 
 		if isContention(err) {
 			m.log("%v", err)
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
 			backoff = time.Duration(math.Min(float64(backoff)*2, float64(maxBackoff)))
 			continue
 		}
@@ -641,6 +647,7 @@ type GreenCIResult struct {
 // Returns whether the agent should be treated as failed.
 // The caller must handle attempt tracking and retry logic.
 func (m *Manager) PostAgentGreenCI(
+	ctx context.Context,
 	agentType agent.AgentType,
 	agentExitErr error,
 	recoveryOpts *agent.StartOptions,
@@ -732,7 +739,7 @@ func (m *Manager) PostAgentGreenCI(
 
 	// Validate and potentially recover
 	gci := m.cfg.GetGreenCIConfig(string(agentType))
-	success := m.validateAndMergePR(agentType, ghClient, owner, repo, pr.Number, pushedSHA, gci.RequiredChecks, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+	success := m.validateAndMergePR(ctx, agentType, ghClient, owner, repo, pr.Number, pushedSHA, gci.RequiredChecks, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
 
 	m.StopHeartbeat(agentType)
 
@@ -763,6 +770,7 @@ func (m *Manager) PostAgentGreenCI(
 // validateAndMergePR polls the PR for validation and handles recovery on failure.
 // Returns true if the PR was successfully merged.
 func (m *Manager) validateAndMergePR(
+	ctx context.Context,
 	agentType agent.AgentType,
 	ghClient *gh.Client,
 	owner, repo string,
@@ -774,7 +782,7 @@ func (m *Manager) validateAndMergePR(
 	currentAttempts, maxAttempts int,
 ) bool {
 	for attempt := currentAttempts; attempt <= maxAttempts; attempt++ {
-		valid, err := m.pollPRValidation(agentType, ghClient, owner, repo, prNumber, expectedSHA, requiredChecks)
+		valid, err := m.pollPRValidation(ctx, agentType, ghClient, owner, repo, prNumber, expectedSHA, requiredChecks)
 		if err != nil {
 			m.log("PR validation error for %s: %v", agentType, err)
 		}
@@ -870,6 +878,7 @@ Diagnose the failures and fix the code so that CI passes. Commit and push your f
 // pollPRValidation polls the PR until validation succeeds or fails.
 // Returns (true, nil) on success, (false, nil) on definite failure, or (false, err) on error.
 func (m *Manager) pollPRValidation(
+	ctx context.Context,
 	agentType agent.AgentType,
 	ghClient *gh.Client,
 	owner, repo string,
@@ -880,7 +889,11 @@ func (m *Manager) pollPRValidation(
 	pollInterval := 15 * time.Second
 
 	for {
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(pollInterval):
+		}
 
 		// Check mergeable status
 		pr, err := ghClient.GetPR(owner, repo, prNumber)

@@ -114,6 +114,10 @@ type Orchestrator struct {
 	// Synchronization
 	syncMgr *syncmgr.Manager
 
+	// Context cancelled on shutdown, used to interrupt blocking sync operations
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
 	// Agent configuration (which agents are enabled)
 	cfg *config.Config
 }
@@ -410,6 +414,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.startTime = time.Now()
 	o.mu.Unlock()
 
+	// Create a context that is cancelled on shutdown, used to interrupt
+	// blocking sync operations (AcquireLock, pollPRValidation).
+	o.shutdownCtx, o.shutdownCancel = context.WithCancel(ctx)
+	defer o.shutdownCancel()
+
 	// Step 2: Synchronization setup (when enabled)
 	if o.syncMgr.Enabled() {
 		if err := o.syncMgr.Setup(); err != nil {
@@ -417,6 +426,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}
 		defer o.syncMgr.Cleanup()
 	}
+
+	// Clean up stale MCP config files from previous runs
+	o.cleanupMCPConfigs()
+	defer o.cleanupMCPConfigs()
 
 	// Step 3: Update agent CLAUDE.md files (auto-managed blocks)
 	o.updateAgentClaudeMD()
@@ -506,11 +519,26 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 func (o *Orchestrator) shutdown() {
 	o.shutdownOnce.Do(func() {
 		close(o.shutdownCh)
+		if o.shutdownCancel != nil {
+			o.shutdownCancel()
+		}
 		for _, ch := range o.channels {
 			close(ch)
 		}
 	})
 	o.wg.Wait()
+}
+
+// cleanupMCPConfigs removes stale MCP config files from .bobbi/.
+func (o *Orchestrator) cleanupMCPConfigs() {
+	pattern := filepath.Join(o.baseDir, ".bobbi", "mcp-config-*.json")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
+	for _, f := range matches {
+		os.Remove(f)
+	}
 }
 
 // sanitizeStartupQueue applies cross-agent-type sanitization rules to the
@@ -1105,7 +1133,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	isGreenCI := o.syncMgr.IsGreenCI(agentType)
 	var featureBranch string
 	if isSynced {
-		if err := o.syncMgr.AcquireLock(agentType); err != nil {
+		if err := o.syncMgr.AcquireLock(o.shutdownCtx, agentType); err != nil {
 			o.log("Lock acquisition failed for %s: %v", agentType, err)
 			o.handlePreCopyFailure(batch, agentType)
 			return
@@ -1271,7 +1299,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	// Post-agent synchronization for synchronized agents
 	if isSynced {
 		if isGreenCI {
-			treatAsFailed := o.syncMgr.PostAgentGreenCI(agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
+			treatAsFailed := o.syncMgr.PostAgentGreenCI(o.shutdownCtx, agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
 			if treatAsFailed {
 				o.log("Agent %s: Green CI failed, treating as failed attempt", agentType)
 				o.handleAgentFailure(batch, agentType, maxAgentRetries) // exhausted

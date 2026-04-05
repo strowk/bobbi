@@ -205,10 +205,7 @@ func backlogPromote(backlogDir, queuesDir string, filename string) error {
 		return fmt.Errorf("unknown backlog item type: %s", itemType)
 	}
 
-	// Strip the leading # heading from the body before sending as additional_context,
-	// since the heading is display metadata, not actionable content.
-	context := stripLeadingHeading(item.Body)
-	_, err = queue.WriteRequest(queuesDir, reqType, "user", context)
+	_, err = queue.WriteRequest(queuesDir, reqType, "user", item.Body)
 	if err != nil {
 		return fmt.Errorf("write queue request: %w", err)
 	}
@@ -305,18 +302,6 @@ func parseBacklogFile(path string) (backlogItem, error) {
 		Body:        body,
 		Title:       title,
 	}, nil
-}
-
-// stripLeadingHeading removes the first # heading line from a markdown body.
-func stripLeadingHeading(body string) string {
-	lines := strings.SplitN(body, "\n", 2)
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "# ") {
-		if len(lines) > 1 {
-			return strings.TrimSpace(lines[1])
-		}
-		return ""
-	}
-	return body
 }
 
 // slugify converts a string into a URL-friendly slug.

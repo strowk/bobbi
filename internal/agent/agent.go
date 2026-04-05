@@ -579,11 +579,7 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 	case Evaluator:
 		switch requestType {
 		case "start_evaluator":
-			base := "A solution deliverable is available in solution-deliverable/. The technical contract is in architecture/. Write and run tests against the deliverable. Provide feedback or confirm the solution."
-			if additionalContext != "" {
-				return base + "\n\nAdditional context:\n\n" + additionalContext
-			}
-			return base
+			return "A solution deliverable is available in solution-deliverable/. The technical contract is in architecture/. Write and run tests against the deliverable. Provide feedback or confirm the solution."
 		case "request_evaluation_change":
 			if itemCount > 1 {
 				return fmt.Sprintf("Multiple changes to the test suite have been requested (%d items):\n\n%s\n\nAddress ALL the feedback above and update the tests.", itemCount, additionalContext)
@@ -593,11 +589,7 @@ func BuildPrompt(agentType AgentType, requestType string, additionalContext stri
 	case Reviewer:
 		switch requestType {
 		case "start_reviewer":
-			base := "Solution code is available in solution/. The technical contract is in architecture/. Review the code for quality and contract compliance, and provide feedback."
-			if additionalContext != "" {
-				return base + "\n\nAdditional context:\n\n" + additionalContext
-			}
-			return base
+			return "Solution code is available in solution/. The technical contract is in architecture/. Review the code for quality and contract compliance, and provide feedback."
 		}
 	}
 	return fmt.Sprintf("Perform the task: %s\nContext: %s", requestType, additionalContext)

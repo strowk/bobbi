@@ -133,6 +133,9 @@ type workBatch struct {
 }
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool, cfg *config.Config) *Orchestrator {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	info := make(map[agent.AgentType]*AgentInfo)
 	cmu := make(map[agent.AgentType]*sync.Mutex)
 	ls := make(map[agent.AgentType]*agentLogState)
@@ -148,9 +151,6 @@ func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration,
 	sc := make(map[agent.AgentType]int)
 	for _, at := range agent.AllTypes() {
 		sc[at] = 0
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
 	}
 
 	orch := &Orchestrator{

@@ -1391,19 +1391,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 			return fmt.Errorf("copy architecture to reviewer: %w", err)
 		}
 
-		// Also refresh solution source from solver for robustness during retries
-		solverDir := filepath.Join(o.baseDir, agent.RepoDir(agent.Solver))
-		dstSolution := filepath.Join(o.baseDir, agent.RepoDir(agent.Reviewer), "solution")
-		if err := os.RemoveAll(dstSolution); err != nil {
-			return fmt.Errorf("remove old solution in reviewer: %w", err)
 		}
-		if err := os.MkdirAll(dstSolution, 0755); err != nil {
-			return fmt.Errorf("create solution dir in reviewer: %w", err)
-		}
-		if err := CopySolutionSource(solverDir, dstSolution); err != nil {
-			return fmt.Errorf("copy solution source to reviewer: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -1710,7 +1698,13 @@ func (o *Orchestrator) handleConfirmSolution(item workItem) {
 		}
 		o.log("confirm_solution copy attempt %d/%d failed: %v", attempt, maxAgentRetries, lastErr)
 		if attempt < maxAgentRetries {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			select {
+			case <-o.shutdownCh:
+				o.log("Shutdown requested during confirm_solution retry")
+				lastErr = fmt.Errorf("shutdown during retry: %w", lastErr)
+				attempt = maxAgentRetries // break out of loop
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
 		}
 	}
 

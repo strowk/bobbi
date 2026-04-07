@@ -1016,12 +1016,6 @@ func (m *Manager) pollGitHubValidation(
 	pollInterval := 15 * time.Second
 
 	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(pollInterval):
-		}
-
 		pr, err := ghClient.GetPR(owner, repo, prNumber)
 		if err != nil {
 			return false, fmt.Errorf("get PR #%d: %w", prNumber, err)
@@ -1029,54 +1023,52 @@ func (m *Manager) pollGitHubValidation(
 
 		if pr.Mergeable == nil {
 			m.log("PR #%d mergeable status is null, continuing to poll...", prNumber)
-			continue
-		}
-		if !*pr.Mergeable {
+		} else if !*pr.Mergeable {
 			m.log("PR #%d is not mergeable", prNumber)
 			return false, nil
-		}
-
-		if pr.Head.SHA != expectedSHA {
+		} else if pr.Head.SHA != expectedSHA {
 			m.log("PR #%d head SHA mismatch: expected %s, got %s", prNumber, expectedSHA, pr.Head.SHA)
 			return false, nil
-		}
-
-		checkRuns, err := ghClient.GetCheckRuns(owner, repo, expectedSHA)
-		if err != nil {
-			return false, fmt.Errorf("get check runs: %w", err)
-		}
-
-		checkMap := make(map[string]*gh.CheckRun)
-		for i := range checkRuns.CheckRuns {
-			checkMap[checkRuns.CheckRuns[i].Name] = &checkRuns.CheckRuns[i]
-		}
-
-		allPassed := true
-		anyPending := false
-		for _, name := range requiredChecks {
-			cr, ok := checkMap[name]
-			if !ok {
-				anyPending = true
-				continue
+		} else {
+			checkRuns, err := ghClient.GetCheckRuns(owner, repo, expectedSHA)
+			if err != nil {
+				return false, fmt.Errorf("get check runs: %w", err)
 			}
-			if cr.Status != "completed" {
-				anyPending = true
-				continue
+
+			checkMap := make(map[string]*gh.CheckRun)
+			for i := range checkRuns.CheckRuns {
+				checkMap[checkRuns.CheckRuns[i].Name] = &checkRuns.CheckRuns[i]
 			}
-			if cr.Conclusion != "success" {
-				m.log("Check %q failed with conclusion %q", name, cr.Conclusion)
-				return false, nil
+
+			anyPending := false
+			for _, name := range requiredChecks {
+				cr, ok := checkMap[name]
+				if !ok {
+					anyPending = true
+					continue
+				}
+				if cr.Status != "completed" {
+					anyPending = true
+					continue
+				}
+				if cr.Conclusion != "success" {
+					m.log("Check %q failed with conclusion %q", name, cr.Conclusion)
+					return false, nil
+				}
+			}
+
+			if anyPending {
+				m.log("Some required checks still pending for PR #%d, continuing to poll...", prNumber)
+			} else {
+				m.log("All required checks passed for PR #%d", prNumber)
+				return true, nil
 			}
 		}
 
-		if anyPending {
-			m.log("Some required checks still pending for PR #%d, continuing to poll...", prNumber)
-			continue
-		}
-
-		if allPassed {
-			m.log("All required checks passed for PR #%d", prNumber)
-			return true, nil
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(pollInterval):
 		}
 	}
 }
@@ -1094,12 +1086,6 @@ func (m *Manager) pollGitLabValidation(
 	pollInterval := 15 * time.Second
 
 	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(pollInterval):
-		}
-
 		mr, err := glClient.GetMR(projectID, mrIID)
 		if err != nil {
 			return false, fmt.Errorf("get MR !%d: %w", mrIID, err)
@@ -1108,78 +1094,72 @@ func (m *Manager) pollGitLabValidation(
 		// Merge status: checking = retry, can_be_merged = proceed, cannot_be_merged = fail
 		if mr.MergeStatus == "checking" {
 			m.log("MR !%d merge status is checking, continuing to poll...", mrIID)
-			continue
-		}
-		if mr.MergeStatus == "cannot_be_merged" {
+		} else if mr.MergeStatus == "cannot_be_merged" {
 			m.log("MR !%d cannot be merged", mrIID)
 			return false, nil
-		}
-		if mr.MergeStatus != "can_be_merged" {
+		} else if mr.MergeStatus != "can_be_merged" {
 			m.log("MR !%d unknown merge status %q, continuing to poll...", mrIID, mr.MergeStatus)
-			continue
-		}
-
-		// Check head SHA matches
-		if mr.SHA != expectedSHA {
+		} else if mr.SHA != expectedSHA {
 			m.log("MR !%d head SHA mismatch: expected %s, got %s", mrIID, expectedSHA, mr.SHA)
 			return false, nil
-		}
-
-		// Get pipeline for the SHA
-		pipeline, err := glClient.GetPipelineForSHA(projectID, expectedSHA)
-		if err != nil {
-			return false, fmt.Errorf("get pipeline for SHA %s: %w", expectedSHA, err)
-		}
-		if pipeline == nil {
-			m.log("No pipeline found for SHA %s, continuing to poll...", expectedSHA)
-			continue
-		}
-
-		// Get pipeline jobs
-		jobs, err := glClient.GetPipelineJobs(projectID, pipeline.ID)
-		if err != nil {
-			return false, fmt.Errorf("get pipeline jobs: %w", err)
-		}
-
-		jobMap := make(map[string]*gl.PipelineJob)
-		for i := range jobs {
-			jobMap[jobs[i].Name] = &jobs[i]
-		}
-
-		allPassed := true
-		anyPending := false
-		terminalFailure := map[string]bool{"failed": true, "canceled": true}
-		pendingStatus := map[string]bool{"pending": true, "running": true, "created": true}
-
-		for _, name := range requiredJobs {
-			job, ok := jobMap[name]
-			if !ok {
-				anyPending = true
-				continue
+		} else {
+			// Get pipeline for the SHA
+			pipeline, err := glClient.GetPipelineForSHA(projectID, expectedSHA)
+			if err != nil {
+				return false, fmt.Errorf("get pipeline for SHA %s: %w", expectedSHA, err)
 			}
-			if job.Status == "success" {
-				continue
+			if pipeline == nil {
+				m.log("No pipeline found for SHA %s, continuing to poll...", expectedSHA)
+			} else {
+				// Get pipeline jobs
+				jobs, err := glClient.GetPipelineJobs(projectID, pipeline.ID)
+				if err != nil {
+					return false, fmt.Errorf("get pipeline jobs: %w", err)
+				}
+
+				jobMap := make(map[string]*gl.PipelineJob)
+				for i := range jobs {
+					jobMap[jobs[i].Name] = &jobs[i]
+				}
+
+				anyPending := false
+				terminalFailure := map[string]bool{"failed": true, "canceled": true}
+				pendingStatus := map[string]bool{"pending": true, "running": true, "created": true}
+
+				for _, name := range requiredJobs {
+					job, ok := jobMap[name]
+					if !ok {
+						anyPending = true
+						continue
+					}
+					if job.Status == "success" {
+						continue
+					}
+					if terminalFailure[job.Status] {
+						m.log("Job %q failed with status %q", name, job.Status)
+						return false, nil
+					}
+					if pendingStatus[job.Status] {
+						anyPending = true
+						continue
+					}
+					// Unknown status — treat as pending
+					anyPending = true
+				}
+
+				if anyPending {
+					m.log("Some required jobs still pending for MR !%d, continuing to poll...", mrIID)
+				} else {
+					m.log("All required jobs passed for MR !%d", mrIID)
+					return true, nil
+				}
 			}
-			if terminalFailure[job.Status] {
-				m.log("Job %q failed with status %q", name, job.Status)
-				return false, nil
-			}
-			if pendingStatus[job.Status] {
-				anyPending = true
-				continue
-			}
-			// Unknown status — treat as pending
-			anyPending = true
 		}
 
-		if anyPending {
-			m.log("Some required jobs still pending for MR !%d, continuing to poll...", mrIID)
-			continue
-		}
-
-		if allPassed {
-			m.log("All required jobs passed for MR !%d", mrIID)
-			return true, nil
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(pollInterval):
 		}
 	}
 }

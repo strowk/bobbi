@@ -327,8 +327,7 @@ func promptBacklogType() (string, error) {
 	fmt.Println("  1) bug")
 	fmt.Println("  2) spec")
 	fmt.Println("  3) feature")
-	fmt.Println("  4) test")
-	fmt.Print("Choice [1/2/3/4]: ")
+	fmt.Print("Choice [1/2/3]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	choice, err := reader.ReadString('\n')
@@ -344,8 +343,6 @@ func promptBacklogType() (string, error) {
 		return "spec", nil
 	case "3", "feature":
 		return "feature", nil
-	case "4", "test":
-		return "test", nil
 	default:
 		return "", fmt.Errorf("invalid choice: %s", choice)
 	}

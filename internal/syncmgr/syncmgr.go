@@ -14,6 +14,7 @@ import (
 	"bobbi/internal/agent"
 	"bobbi/internal/config"
 	gh "bobbi/internal/github"
+	gl "bobbi/internal/gitlab"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -643,7 +644,7 @@ type GreenCIResult struct {
 }
 
 // PostAgentGreenCI performs the Green CI post-agent workflow:
-// push feature branch, create PR, validate, merge or recover.
+// push feature branch, create PR/MR, validate, merge or recover.
 // Returns whether the agent should be treated as failed.
 // The caller must handle attempt tracking and retry logic.
 func (m *Manager) PostAgentGreenCI(
@@ -659,6 +660,7 @@ func (m *Manager) PostAgentGreenCI(
 
 	repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
 	trunk := m.cfg.GetTrunkBranch(string(agentType))
+	provider := m.cfg.GreenCIProvider(string(agentType))
 
 	// Porcelain check + commit recovery
 	dirty, err := m.isDirty(repoDir)
@@ -696,17 +698,9 @@ func (m *Manager) PostAgentGreenCI(
 		}
 	}
 
-	// If porcelain failed, no PR — release lock and fail
+	// If porcelain failed, no PR/MR — release lock and fail
 	if porcelainFailed {
-		m.log("Porcelain failed for %s — no PR created, releasing lock", agentType)
-		m.ReleaseLock(agentType)
-		return true
-	}
-
-	// Get remote URL for owner/repo extraction
-	owner, repo := m.getOwnerRepo(repoDir)
-	if owner == "" || repo == "" {
-		m.log("ERROR: Could not determine owner/repo for %s", agentType)
+		m.log("Porcelain failed for %s — no PR/MR created, releasing lock", agentType)
 		m.ReleaseLock(agentType)
 		return true
 	}
@@ -720,26 +714,21 @@ func (m *Manager) PostAgentGreenCI(
 	}
 	pushedSHA = strings.TrimSpace(pushedSHA)
 
-	ghClient := gh.NewClient()
-
-	// Create PR
-	pr, err := ghClient.CreatePR(owner, repo,
-		fmt.Sprintf("Green CI: %s", featureBranch),
-		featureBranch, trunk,
-		fmt.Sprintf("Automated PR from bobbi Green CI for %s agent", agentType))
-	if err != nil {
-		m.log("ERROR: Failed to create PR: %v", err)
-		m.ReleaseLock(agentType)
-		return true
-	}
-	m.log("Created PR #%d for %s (%s -> %s)", pr.Number, agentType, featureBranch, trunk)
-
 	// Restart heartbeat for validation polling
 	m.StartHeartbeat(agentType)
 
-	// Validate and potentially recover
-	gci := m.cfg.GetGreenCIConfig(string(agentType))
-	success := m.validateAndMergePR(ctx, agentType, ghClient, owner, repo, pr.Number, pushedSHA, gci.RequiredChecks, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+	var success bool
+	switch provider {
+	case "github":
+		success = m.postAgentGitHub(ctx, agentType, repoDir, pushedSHA, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+	case "gitlab":
+		success = m.postAgentGitLab(ctx, agentType, repoDir, pushedSHA, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+	default:
+		m.log("ERROR: Unknown Green CI provider %q for %s", provider, agentType)
+		m.StopHeartbeat(agentType)
+		m.ReleaseLock(agentType)
+		return true
+	}
 
 	m.StopHeartbeat(agentType)
 
@@ -755,11 +744,7 @@ func (m *Manager) PostAgentGreenCI(
 		return false
 	}
 
-	// Validation failed and retries exhausted — close PR, switch to trunk, release lock
-	m.log("Green CI validation failed for %s — closing PR #%d", agentType, pr.Number)
-	if err := ghClient.ClosePR(owner, repo, pr.Number); err != nil {
-		m.log("Error closing PR #%d: %v", pr.Number, err)
-	}
+	// Validation failed and retries exhausted — switch to trunk, release lock
 	if err := gitCmd(repoDir, "checkout", trunk); err != nil {
 		m.log("Error checking out trunk after failure: %v", err)
 	}
@@ -767,9 +752,91 @@ func (m *Manager) PostAgentGreenCI(
 	return true
 }
 
-// validateAndMergePR polls the PR for validation and handles recovery on failure.
-// Returns true if the PR was successfully merged.
-func (m *Manager) validateAndMergePR(
+// postAgentGitHub handles the GitHub-specific Green CI flow (PR creation, validation, merge/close).
+func (m *Manager) postAgentGitHub(
+	ctx context.Context,
+	agentType agent.AgentType,
+	repoDir, pushedSHA, featureBranch, trunk string,
+	recoveryOpts *agent.StartOptions,
+	currentAttempts, maxAttempts int,
+) bool {
+	owner, repo := m.getOwnerRepo(repoDir)
+	if owner == "" || repo == "" {
+		m.log("ERROR: Could not determine owner/repo for %s", agentType)
+		return false
+	}
+
+	ghClient := gh.NewClient()
+	gci := m.cfg.GetGreenCIConfig(string(agentType))
+
+	// Create PR
+	pr, err := ghClient.CreatePR(owner, repo,
+		fmt.Sprintf("Green CI: %s", featureBranch),
+		featureBranch, trunk,
+		fmt.Sprintf("Automated PR from bobbi Green CI for %s agent", agentType))
+	if err != nil {
+		m.log("ERROR: Failed to create PR: %v", err)
+		return false
+	}
+	m.log("Created PR #%d for %s (%s -> %s)", pr.Number, agentType, featureBranch, trunk)
+
+	success := m.validateAndMergeGitHub(ctx, agentType, ghClient, owner, repo, pr.Number, pushedSHA, gci.GitHub.RequiredChecks, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+
+	if !success {
+		m.log("Green CI validation failed for %s — closing PR #%d", agentType, pr.Number)
+		if err := ghClient.ClosePR(owner, repo, pr.Number); err != nil {
+			m.log("Error closing PR #%d: %v", pr.Number, err)
+		}
+	}
+	return success
+}
+
+// postAgentGitLab handles the GitLab-specific Green CI flow (MR creation, validation, merge/close).
+func (m *Manager) postAgentGitLab(
+	ctx context.Context,
+	agentType agent.AgentType,
+	repoDir, pushedSHA, featureBranch, trunk string,
+	recoveryOpts *agent.StartOptions,
+	currentAttempts, maxAttempts int,
+) bool {
+	remoteURL, err := gitOutput(repoDir, "remote", "get-url", "origin")
+	if err != nil {
+		m.log("ERROR: Could not get remote URL for %s: %v", agentType, err)
+		return false
+	}
+	projectID := gl.ProjectID(strings.TrimSpace(remoteURL))
+	if projectID == "" {
+		m.log("ERROR: Could not determine project ID for %s", agentType)
+		return false
+	}
+
+	glClient := gl.NewClient()
+	gci := m.cfg.GetGreenCIConfig(string(agentType))
+
+	// Create MR
+	mr, err := glClient.CreateMR(projectID,
+		fmt.Sprintf("Green CI: %s", featureBranch),
+		featureBranch, trunk,
+		fmt.Sprintf("Automated MR from bobbi Green CI for %s agent", agentType))
+	if err != nil {
+		m.log("ERROR: Failed to create MR: %v", err)
+		return false
+	}
+	m.log("Created MR !%d for %s (%s -> %s)", mr.IID, agentType, featureBranch, trunk)
+
+	success := m.validateAndMergeGitLab(ctx, agentType, glClient, projectID, mr.IID, pushedSHA, gci.GitLab.RequiredJobs, featureBranch, trunk, recoveryOpts, currentAttempts, maxAttempts)
+
+	if !success {
+		m.log("Green CI validation failed for %s — closing MR !%d", agentType, mr.IID)
+		if err := glClient.CloseMR(projectID, mr.IID); err != nil {
+			m.log("Error closing MR !%d: %v", mr.IID, err)
+		}
+	}
+	return success
+}
+
+// validateAndMergeGitHub polls the PR for validation and handles recovery on failure.
+func (m *Manager) validateAndMergeGitHub(
 	ctx context.Context,
 	agentType agent.AgentType,
 	ghClient *gh.Client,
@@ -782,13 +849,12 @@ func (m *Manager) validateAndMergePR(
 	currentAttempts, maxAttempts int,
 ) bool {
 	for attempt := currentAttempts; attempt <= maxAttempts; attempt++ {
-		valid, err := m.pollPRValidation(ctx, agentType, ghClient, owner, repo, prNumber, expectedSHA, requiredChecks)
+		valid, err := m.pollGitHubValidation(ctx, agentType, ghClient, owner, repo, prNumber, expectedSHA, requiredChecks)
 		if err != nil {
 			m.log("PR validation error for %s: %v", agentType, err)
 		}
 
 		if valid {
-			// Merge the PR
 			_, err := ghClient.MergePR(owner, repo, prNumber)
 			if err != nil {
 				m.log("Error merging PR #%d: %v", prNumber, err)
@@ -798,13 +864,12 @@ func (m *Manager) validateAndMergePR(
 			return true
 		}
 
-		// Validation failed — check if we can retry
 		if attempt >= maxAttempts {
 			m.log("Green CI: max attempts (%d) exhausted for %s", maxAttempts, agentType)
 			return false
 		}
 
-		// Run recovery agent
+		// Run GitHub recovery agent
 		m.log("Green CI: running recovery agent for %s (attempt %d/%d)", agentType, attempt+1, maxAttempts)
 		repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
 
@@ -822,62 +887,124 @@ Please use the `+"`gh`"+` CLI to inspect the pull request and failed checks:
 Diagnose the failures and fix the code so that CI passes. Commit and push your fixes to the current branch.`,
 			prNumber, trunk, prNumber, prNumber, featureBranch)
 
-		opts := &agent.StartOptions{
-			BaseDir: m.baseDir,
-			LogFunc: m.logFunc,
-		}
-		if recoveryOpts != nil {
-			opts.OnTokens = recoveryOpts.OnTokens
-			opts.OnToolUse = recoveryOpts.OnToolUse
-			opts.OnLogEntry = recoveryOpts.OnLogEntry
-			opts.OnSessionID = recoveryOpts.OnSessionID
-		}
-
-		if err := agent.StartAgent(agentType, repoDir, recoveryPrompt, opts); err != nil {
-			m.log("Recovery agent for %s failed: %v", agentType, err)
-		}
-
-		// Porcelain check + commit recovery after recovery agent
-		dirty, err := m.isDirty(repoDir)
-		if err != nil {
-			m.log("Error checking porcelain after recovery agent for %s: %v", agentType, err)
-		}
-		if dirty {
-			recovered := false
-			for recAttempt := 1; recAttempt <= 3; recAttempt++ {
-				m.log("Post-recovery commit recovery %d/3 for %s", recAttempt, agentType)
-				m.runRecoveryAgent(agentType, repoDir, recoveryOpts)
-				dirty, err = m.isDirty(repoDir)
-				if err == nil && !dirty {
-					recovered = true
-					break
-				}
-			}
-			if !recovered {
-				m.log("WARNING: Post-recovery commit recovery failed for %s", agentType)
-			}
-		}
-
-		// Push recovery changes
-		if hasRemote(repoDir) {
-			if err := gitCmd(repoDir, "push"); err != nil {
-				m.log("Error pushing recovery changes for %s: %v", agentType, err)
-			}
-		}
-
-		// Update expected SHA for next validation round
-		newSHA, err := gitOutput(repoDir, "rev-parse", "HEAD")
-		if err == nil {
-			expectedSHA = strings.TrimSpace(newSHA)
-		}
+		expectedSHA = m.runGreenCIRecovery(agentType, repoDir, recoveryPrompt, recoveryOpts)
 	}
 
 	return false
 }
 
-// pollPRValidation polls the PR until validation succeeds or fails.
-// Returns (true, nil) on success, (false, nil) on definite failure, or (false, err) on error.
-func (m *Manager) pollPRValidation(
+// validateAndMergeGitLab polls the MR for validation and handles recovery on failure.
+func (m *Manager) validateAndMergeGitLab(
+	ctx context.Context,
+	agentType agent.AgentType,
+	glClient *gl.Client,
+	projectID string,
+	mrIID int,
+	expectedSHA string,
+	requiredJobs []string,
+	featureBranch, trunk string,
+	recoveryOpts *agent.StartOptions,
+	currentAttempts, maxAttempts int,
+) bool {
+	for attempt := currentAttempts; attempt <= maxAttempts; attempt++ {
+		valid, err := m.pollGitLabValidation(ctx, agentType, glClient, projectID, mrIID, expectedSHA, requiredJobs)
+		if err != nil {
+			m.log("MR validation error for %s: %v", agentType, err)
+		}
+
+		if valid {
+			_, err := glClient.MergeMR(projectID, mrIID)
+			if err != nil {
+				m.log("Error merging MR !%d: %v", mrIID, err)
+				return false
+			}
+			m.log("Merged MR !%d for %s", mrIID, agentType)
+			return true
+		}
+
+		if attempt >= maxAttempts {
+			m.log("Green CI: max attempts (%d) exhausted for %s", maxAttempts, agentType)
+			return false
+		}
+
+		// Run GitLab recovery agent
+		m.log("Green CI: running recovery agent for %s (attempt %d/%d)", agentType, attempt+1, maxAttempts)
+		repoDir := filepath.Join(m.baseDir, agent.RepoDir(agentType))
+
+		recoveryPrompt := fmt.Sprintf(`The CI pipeline on your merge request failed. Your changes were pushed to a feature branch and a merge request was created, but it cannot be merged because CI validation did not pass.
+
+Merge request IID: %d
+Target branch: %s
+
+Please use the `+"`glab`"+` CLI to inspect the merge request and failed jobs:
+- Run `+"`glab mr view %d`"+` to see the MR status
+- Run `+"`glab ci view %d`"+` to see pipeline status and failed jobs
+- Run `+"`glab ci trace <job_id>`"+` to see the failed job logs
+
+Diagnose the failures and fix the code so that CI passes. Commit and push your fixes to the current branch.`,
+			mrIID, trunk, mrIID, mrIID)
+
+		expectedSHA = m.runGreenCIRecovery(agentType, repoDir, recoveryPrompt, recoveryOpts)
+	}
+
+	return false
+}
+
+// runGreenCIRecovery runs a recovery agent session and returns the new HEAD SHA.
+func (m *Manager) runGreenCIRecovery(agentType agent.AgentType, repoDir, recoveryPrompt string, recoveryOpts *agent.StartOptions) string {
+	opts := &agent.StartOptions{
+		BaseDir: m.baseDir,
+		LogFunc: m.logFunc,
+	}
+	if recoveryOpts != nil {
+		opts.OnTokens = recoveryOpts.OnTokens
+		opts.OnToolUse = recoveryOpts.OnToolUse
+		opts.OnLogEntry = recoveryOpts.OnLogEntry
+		opts.OnSessionID = recoveryOpts.OnSessionID
+	}
+
+	if err := agent.StartAgent(agentType, repoDir, recoveryPrompt, opts); err != nil {
+		m.log("Recovery agent for %s failed: %v", agentType, err)
+	}
+
+	// Porcelain check + commit recovery after recovery agent
+	dirty, err := m.isDirty(repoDir)
+	if err != nil {
+		m.log("Error checking porcelain after recovery agent for %s: %v", agentType, err)
+	}
+	if dirty {
+		recovered := false
+		for recAttempt := 1; recAttempt <= 3; recAttempt++ {
+			m.log("Post-recovery commit recovery %d/3 for %s", recAttempt, agentType)
+			m.runRecoveryAgent(agentType, repoDir, recoveryOpts)
+			dirty, err = m.isDirty(repoDir)
+			if err == nil && !dirty {
+				recovered = true
+				break
+			}
+		}
+		if !recovered {
+			m.log("WARNING: Post-recovery commit recovery failed for %s", agentType)
+		}
+	}
+
+	// Push recovery changes
+	if hasRemote(repoDir) {
+		if err := gitCmd(repoDir, "push"); err != nil {
+			m.log("Error pushing recovery changes for %s: %v", agentType, err)
+		}
+	}
+
+	// Return updated SHA
+	newSHA, err := gitOutput(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(newSHA)
+}
+
+// pollGitHubValidation polls the PR until validation succeeds or fails.
+func (m *Manager) pollGitHubValidation(
 	ctx context.Context,
 	agentType agent.AgentType,
 	ghClient *gh.Client,
@@ -895,13 +1022,11 @@ func (m *Manager) pollPRValidation(
 		case <-time.After(pollInterval):
 		}
 
-		// Check mergeable status
 		pr, err := ghClient.GetPR(owner, repo, prNumber)
 		if err != nil {
 			return false, fmt.Errorf("get PR #%d: %w", prNumber, err)
 		}
 
-		// Mergeable: null = retry, true = proceed, false = fail
 		if pr.Mergeable == nil {
 			m.log("PR #%d mergeable status is null, continuing to poll...", prNumber)
 			continue
@@ -911,19 +1036,16 @@ func (m *Manager) pollPRValidation(
 			return false, nil
 		}
 
-		// Check head SHA matches what we pushed
 		if pr.Head.SHA != expectedSHA {
 			m.log("PR #%d head SHA mismatch: expected %s, got %s", prNumber, expectedSHA, pr.Head.SHA)
 			return false, nil
 		}
 
-		// Check required check runs
 		checkRuns, err := ghClient.GetCheckRuns(owner, repo, expectedSHA)
 		if err != nil {
 			return false, fmt.Errorf("get check runs: %w", err)
 		}
 
-		// Build map of check runs by name
 		checkMap := make(map[string]*gh.CheckRun)
 		for i := range checkRuns.CheckRuns {
 			checkMap[checkRuns.CheckRuns[i].Name] = &checkRuns.CheckRuns[i]
@@ -934,7 +1056,6 @@ func (m *Manager) pollPRValidation(
 		for _, name := range requiredChecks {
 			cr, ok := checkMap[name]
 			if !ok {
-				// Check not found yet — keep polling
 				anyPending = true
 				continue
 			}
@@ -955,6 +1076,109 @@ func (m *Manager) pollPRValidation(
 
 		if allPassed {
 			m.log("All required checks passed for PR #%d", prNumber)
+			return true, nil
+		}
+	}
+}
+
+// pollGitLabValidation polls the MR until validation succeeds or fails.
+func (m *Manager) pollGitLabValidation(
+	ctx context.Context,
+	agentType agent.AgentType,
+	glClient *gl.Client,
+	projectID string,
+	mrIID int,
+	expectedSHA string,
+	requiredJobs []string,
+) (bool, error) {
+	pollInterval := 15 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(pollInterval):
+		}
+
+		mr, err := glClient.GetMR(projectID, mrIID)
+		if err != nil {
+			return false, fmt.Errorf("get MR !%d: %w", mrIID, err)
+		}
+
+		// Merge status: checking = retry, can_be_merged = proceed, cannot_be_merged = fail
+		if mr.MergeStatus == "checking" {
+			m.log("MR !%d merge status is checking, continuing to poll...", mrIID)
+			continue
+		}
+		if mr.MergeStatus == "cannot_be_merged" {
+			m.log("MR !%d cannot be merged", mrIID)
+			return false, nil
+		}
+		if mr.MergeStatus != "can_be_merged" {
+			m.log("MR !%d unknown merge status %q, continuing to poll...", mrIID, mr.MergeStatus)
+			continue
+		}
+
+		// Check head SHA matches
+		if mr.SHA != expectedSHA {
+			m.log("MR !%d head SHA mismatch: expected %s, got %s", mrIID, expectedSHA, mr.SHA)
+			return false, nil
+		}
+
+		// Get pipeline for the SHA
+		pipeline, err := glClient.GetPipelineForSHA(projectID, expectedSHA)
+		if err != nil {
+			return false, fmt.Errorf("get pipeline for SHA %s: %w", expectedSHA, err)
+		}
+		if pipeline == nil {
+			m.log("No pipeline found for SHA %s, continuing to poll...", expectedSHA)
+			continue
+		}
+
+		// Get pipeline jobs
+		jobs, err := glClient.GetPipelineJobs(projectID, pipeline.ID)
+		if err != nil {
+			return false, fmt.Errorf("get pipeline jobs: %w", err)
+		}
+
+		jobMap := make(map[string]*gl.PipelineJob)
+		for i := range jobs {
+			jobMap[jobs[i].Name] = &jobs[i]
+		}
+
+		allPassed := true
+		anyPending := false
+		terminalFailure := map[string]bool{"failed": true, "canceled": true}
+		pendingStatus := map[string]bool{"pending": true, "running": true, "created": true}
+
+		for _, name := range requiredJobs {
+			job, ok := jobMap[name]
+			if !ok {
+				anyPending = true
+				continue
+			}
+			if job.Status == "success" {
+				continue
+			}
+			if terminalFailure[job.Status] {
+				m.log("Job %q failed with status %q", name, job.Status)
+				return false, nil
+			}
+			if pendingStatus[job.Status] {
+				anyPending = true
+				continue
+			}
+			// Unknown status — treat as pending
+			anyPending = true
+		}
+
+		if anyPending {
+			m.log("Some required jobs still pending for MR !%d, continuing to poll...", mrIID)
+			continue
+		}
+
+		if allPassed {
+			m.log("All required jobs passed for MR !%d", mrIID)
 			return true, nil
 		}
 	}

@@ -20,12 +20,22 @@ type AgentsConfig struct {
 	Reviewer  *AgentEnabledConfig `yaml:"reviewer"`
 }
 
+// GitHubCIConfig holds GitHub-specific Green CI settings.
+type GitHubCIConfig struct {
+	RequiredChecks []string `yaml:"required_checks"`
+}
+
+// GitLabCIConfig holds GitLab-specific Green CI settings.
+type GitLabCIConfig struct {
+	RequiredJobs []string `yaml:"required_jobs"`
+}
+
 // GreenCIConfig holds Green CI settings for a single agent type.
 type GreenCIConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	Provider       string   `yaml:"provider"`
-	TrunkBranch    string   `yaml:"trunk_branch"`
-	RequiredChecks []string `yaml:"required_checks"`
+	Enabled     bool            `yaml:"enabled"`
+	TrunkBranch string          `yaml:"trunk_branch"`
+	GitHub      *GitHubCIConfig `yaml:"github"`
+	GitLab      *GitLabCIConfig `yaml:"gitlab"`
 }
 
 // SyncConfig holds synchronization settings from .bobbi/config.yaml.
@@ -129,13 +139,25 @@ func (c *Config) Validate() error {
 		if !inSyncAgents {
 			return fmt.Errorf("sync.green_ci.%s: agent is not in sync.agents", agentName)
 		}
-		// Provider must be "github"
-		if gci.Provider != "github" {
-			return fmt.Errorf("sync.green_ci.%s: unsupported provider %q (only \"github\" is supported)", agentName, gci.Provider)
+		// Exactly one provider key must be present
+		hasGitHub := gci.GitHub != nil
+		hasGitLab := gci.GitLab != nil
+		if !hasGitHub && !hasGitLab {
+			return fmt.Errorf("sync.green_ci.%s: exactly one provider key (github or gitlab) is required when green_ci is enabled", agentName)
 		}
-		// required_checks must be present and non-empty
-		if len(gci.RequiredChecks) == 0 {
-			return fmt.Errorf("sync.green_ci.%s: required_checks must be present and non-empty when green_ci is enabled", agentName)
+		if hasGitHub && hasGitLab {
+			return fmt.Errorf("sync.green_ci.%s: exactly one provider key (github or gitlab) must be present, found both", agentName)
+		}
+		// Validate provider-specific required list
+		if hasGitHub {
+			if len(gci.GitHub.RequiredChecks) == 0 {
+				return fmt.Errorf("sync.green_ci.%s: github.required_checks must be present and non-empty when green_ci is enabled", agentName)
+			}
+		}
+		if hasGitLab {
+			if len(gci.GitLab.RequiredJobs) == 0 {
+				return fmt.Errorf("sync.green_ci.%s: gitlab.required_jobs must be present and non-empty when green_ci is enabled", agentName)
+			}
 		}
 	}
 
@@ -227,4 +249,19 @@ func (c *Config) GetTrunkBranch(agentType string) string {
 		return "main"
 	}
 	return gci.TrunkBranch
+}
+
+// GreenCIProvider returns "github" or "gitlab" for the given agent's Green CI config.
+func (c *Config) GreenCIProvider(agentType string) string {
+	gci := c.GetGreenCIConfig(agentType)
+	if gci == nil {
+		return ""
+	}
+	if gci.GitHub != nil {
+		return "github"
+	}
+	if gci.GitLab != nil {
+		return "gitlab"
+	}
+	return ""
 }

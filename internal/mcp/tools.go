@@ -176,4 +176,3 @@ func makeArchChangeHandler(queuesDir, from string) ToolHandler {
 		return TextResult("Architecture change requested.")
 	}
 }
-

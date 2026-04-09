@@ -24,23 +24,23 @@ const maxAgentRetries = 3
 
 // AgentInfo holds the current state of a single agent type for display.
 type AgentInfo struct {
-	Status            string // "idle", "running", "queued"
-	SessionID         string // Claude Code session ID (truncated for display)
-	Prompt            string
-	RequestType       string // e.g. "start_solver", "request_solution_change"
-	AdditionalContext string // the additional_context from the request, if any
-	InputTokens       int64  // tokens for the current/latest run
-	OutputTokens      int64  // tokens for the current/latest run
-	TotalInputTokens  int64  // cumulative tokens across all runs
-	TotalOutputTokens int64  // cumulative tokens across all runs
-	ToolUses          int    // total tool uses for the current/latest run
-	ToolFailures      int    // tool use failures for the current/latest run
-	TotalToolUses     int    // cumulative tool uses across all runs
-	TotalToolFailures int    // cumulative tool use failures across all runs
+	Status              string // "idle", "running", "queued"
+	SessionID           string // Claude Code session ID (truncated for display)
+	Prompt              string
+	RequestType         string // e.g. "start_solver", "request_solution_change"
+	AdditionalContext   string // the additional_context from the request, if any
+	InputTokens         int64  // tokens for the current/latest run
+	OutputTokens        int64  // tokens for the current/latest run
+	TotalInputTokens    int64  // cumulative tokens across all runs
+	TotalOutputTokens   int64  // cumulative tokens across all runs
+	ToolUses            int    // total tool uses for the current/latest run
+	ToolFailures        int    // tool use failures for the current/latest run
+	TotalToolUses       int    // cumulative tool uses across all runs
+	TotalToolFailures   int    // cumulative tool use failures across all runs
 	HasRun              bool
-	DescriptionInjected bool               // true when agent description was prepended to prompt
-	LogLines            []agent.LogLine    // all extracted log lines from JSONL stream
-	SparklineData     []float64       // per-event total token values for sparkline
+	DescriptionInjected bool            // true when agent description was prepended to prompt
+	LogLines            []agent.LogLine // all extracted log lines from JSONL stream
+	SparklineData       []float64       // per-event total token values for sparkline
 }
 
 // logGroup represents a group of log lines from a single JSONL event, optionally tied to a message.id.
@@ -108,8 +108,8 @@ type Orchestrator struct {
 	completedCount  int32                              // atomic
 	failedCount     int32                              // atomic
 	startTime       time.Time
-	sharedMaxTokens float64 // shared maximum for sparkline normalization
-	sessionCounts   map[agent.AgentType]int            // number of sessions per agent type
+	sharedMaxTokens float64                 // shared maximum for sparkline normalization
+	sessionCounts   map[agent.AgentType]int // number of sessions per agent type
 
 	// Synchronization
 	syncMgr *syncmgr.Manager
@@ -129,11 +129,11 @@ type workItem struct {
 
 // workBatch represents one or more coalesced work items of the same request type.
 type workBatch struct {
-	requestType        string
-	items              []workItem // ALL items (including dupes) for completion marking
-	mergedContext      string     // Combined additional_context from all unique items
-	itemCount          int        // Number of items after deduplication
-	foldedChangeContext string    // Context from request_*_change items folded into a start_* batch
+	requestType         string
+	items               []workItem // ALL items (including dupes) for completion marking
+	mergedContext       string     // Combined additional_context from all unique items
+	itemCount           int        // Number of items after deduplication
+	foldedChangeContext string     // Context from request_*_change items folded into a start_* batch
 }
 
 func New(baseDir string, userPrompt string, rawMode bool, timeout time.Duration, noSparklines bool, cfg *config.Config) *Orchestrator {
@@ -543,11 +543,11 @@ func (o *Orchestrator) cleanupMCPConfigs() {
 
 // sanitizeStartupQueue applies cross-agent-type sanitization rules to the
 // startup queue:
-// - Rules 1 & 2: When request_solution_change is present, drops stale
-//   start_evaluator/start_reviewer (without additional_context) and handoff_solution.
-// - Rule 3: When confirm_solution is present alongside any other request with
-//   non-empty additional_context, drops confirm_solution to prevent immediate
-//   shutdown when there is pending meaningful work.
+//   - Rules 1 & 2: When request_solution_change is present, drops stale
+//     start_evaluator/start_reviewer (without additional_context) and handoff_solution.
+//   - Rule 3: When confirm_solution is present alongside any other request with
+//     non-empty additional_context, drops confirm_solution to prevent immediate
+//     shutdown when there is pending meaningful work.
 func (o *Orchestrator) sanitizeStartupQueue() {
 	requests, paths, err := queue.ReadRequests(o.queuesDir, o.log)
 	if err != nil || len(requests) == 0 {
@@ -1390,8 +1390,7 @@ func (o *Orchestrator) preCopy(agentType agent.AgentType) error {
 		if err := CopyArchitectureContract(archDir, dst); err != nil {
 			return fmt.Errorf("copy architecture to reviewer: %w", err)
 		}
-
-		}
+	}
 	return nil
 }
 
@@ -1749,7 +1748,11 @@ func (o *Orchestrator) copyDeliverableToOutput() error {
 		srcDeliverable = filepath.Join(o.baseDir, agent.RepoDir(agent.Solver), "solution-deliverable")
 	}
 	// Acquire evaluator copy mutex to prevent races with handleHandoffSolution
-	// which writes to the same evaluator directory concurrently.
+	// which writes to the same evaluator directory concurrently. We use the
+	// evaluator mutex even when the evaluator is disabled because
+	// handleHandoffSolution always writes to the evaluator repo, and this
+	// function reads from the solver repo in the disabled case — the mutex
+	// serializes both paths to avoid partial-read during a concurrent write.
 	o.copyMu[agent.Evaluator].Lock()
 	defer o.copyMu[agent.Evaluator].Unlock()
 

@@ -12,10 +12,10 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Result  *interface{} `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
+	Result  *interface{}    `json:"result,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
 }
 
 type RPCError struct {
@@ -31,9 +31,9 @@ type ServerInfo struct {
 }
 
 type InitializeResult struct {
-	ProtocolVersion string            `json:"protocolVersion"`
+	ProtocolVersion string             `json:"protocolVersion"`
 	Capabilities    ServerCapabilities `json:"capabilities"`
-	ServerInfo      ServerInfo        `json:"serverInfo"`
+	ServerInfo      ServerInfo         `json:"serverInfo"`
 }
 
 type ServerCapabilities struct {
@@ -49,9 +49,9 @@ type Tool struct {
 }
 
 type InputSchema struct {
-	Type       string                 `json:"type"`
-	Properties map[string]Property    `json:"properties,omitempty"`
-	Required   []string               `json:"required,omitempty"`
+	Type       string              `json:"type"`
+	Properties map[string]Property `json:"properties,omitempty"`
+	Required   []string            `json:"required,omitempty"`
 }
 
 type Property struct {

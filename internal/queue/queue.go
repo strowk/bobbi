@@ -102,6 +102,8 @@ func ReadRequests(queuesDir string, logFn LogFunc) ([]Request, []string, error) 
 		if err != nil {
 			if logFn != nil {
 				logFn("[queue] failed to read %s: %v", path, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "[queue] failed to read %s: %v\n", path, err)
 			}
 			continue
 		}
@@ -109,6 +111,8 @@ func ReadRequests(queuesDir string, logFn LogFunc) ([]Request, []string, error) 
 		if err := yaml.Unmarshal(data, &req); err != nil {
 			if logFn != nil {
 				logFn("[queue] failed to parse %s: %v", path, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "[queue] failed to parse %s: %v\n", path, err)
 			}
 			continue
 		}

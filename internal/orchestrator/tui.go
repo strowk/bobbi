@@ -62,10 +62,10 @@ type TUIModel struct {
 	detailView  bool // whether the detail view is open
 
 	// Detail view scrolling
-	detailOffset  int  // scroll offset (lines from top)
-	followMode    bool // auto-scroll to bottom
-	wrapMode      bool // word wrap in detail view
-	thinkingMode  bool // show thinking blocks in detail view
+	detailOffset int  // scroll offset (lines from top)
+	followMode   bool // auto-scroll to bottom
+	wrapMode     bool // word wrap in detail view
+	thinkingMode bool // show thinking blocks in detail view
 }
 
 // NewTUIModel creates a new TUI model.

@@ -40,12 +40,12 @@ type GreenCIConfig struct {
 
 // SyncConfig holds synchronization settings from .bobbi/config.yaml.
 type SyncConfig struct {
-	Enabled           bool                       `yaml:"enabled"`
-	OwnerPrefix       string                     `yaml:"owner_prefix"`
-	StaleThreshold    string                     `yaml:"stale_threshold"`
-	HeartbeatInterval string                     `yaml:"heartbeat_interval"`
-	Agents            []string                   `yaml:"agents"`
-	GreenCI           map[string]*GreenCIConfig  `yaml:"green_ci"`
+	Enabled           bool                      `yaml:"enabled"`
+	OwnerPrefix       string                    `yaml:"owner_prefix"`
+	StaleThreshold    string                    `yaml:"stale_threshold"`
+	HeartbeatInterval string                    `yaml:"heartbeat_interval"`
+	Agents            []string                  `yaml:"agents"`
+	GreenCI           map[string]*GreenCIConfig `yaml:"green_ci"`
 }
 
 // Config represents the full .bobbi/config.yaml file.

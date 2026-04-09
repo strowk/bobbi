@@ -201,8 +201,6 @@ func backlogPromote(backlogDir, queuesDir string, filename string) error {
 		if err != nil {
 			return err
 		}
-	case "test":
-		reqType = "request_evaluation_change"
 	default:
 		return fmt.Errorf("unknown backlog item type: %s", itemType)
 	}

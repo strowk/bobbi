@@ -251,13 +251,13 @@ type claudeEvent struct {
 // fullContentBlock represents any content block type found in message.content arrays.
 type fullContentBlock struct {
 	Type      string          `json:"type"`
-	Text      string          `json:"text"`       // text blocks
-	Thinking  string          `json:"thinking"`   // thinking blocks
-	Name      string          `json:"name"`       // tool_use blocks
-	BlockID   string          `json:"id"`         // tool_use blocks
-	Input     json.RawMessage `json:"input"`      // tool_use blocks
-	IsError   bool            `json:"is_error"`   // tool_result blocks
-	Content   json.RawMessage `json:"content"`    // tool_result blocks
+	Text      string          `json:"text"`        // text blocks
+	Thinking  string          `json:"thinking"`    // thinking blocks
+	Name      string          `json:"name"`        // tool_use blocks
+	BlockID   string          `json:"id"`          // tool_use blocks
+	Input     json.RawMessage `json:"input"`       // tool_use blocks
+	IsError   bool            `json:"is_error"`    // tool_result blocks
+	Content   json.RawMessage `json:"content"`     // tool_result blocks
 	ToolUseID string          `json:"tool_use_id"` // tool_result blocks
 }
 

@@ -1290,22 +1290,29 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 
 	agentErr := agent.StartAgent(agentType, repoDir, fullPrompt, opts)
 
-	// Update agent state to idle
-	o.mu.Lock()
-	info.Status = "idle"
-	info.HasRun = true
-	o.mu.Unlock()
-
 	// Post-agent synchronization for synchronized agents
+	// When Green CI is enabled, keep agent status as "running" throughout the
+	// post-agent flow (push, PR/MR creation, validation polling, recovery sessions)
+	// so the TUI accurately reflects that work is still in progress.
 	if isSynced {
 		if isGreenCI {
 			treatAsFailed := o.syncMgr.PostAgentGreenCI(context.Background(), agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
+			// Now transition to idle after the entire Green CI flow completes
+			o.mu.Lock()
+			info.Status = "idle"
+			info.HasRun = true
+			o.mu.Unlock()
 			if treatAsFailed {
 				o.log("Agent %s: Green CI failed, treating as failed attempt", agentType)
 				o.handleAgentFailure(batch, agentType, maxAgentRetries) // exhausted
 				return
 			}
 		} else {
+			// Non-Green CI sync: safe to transition to idle immediately
+			o.mu.Lock()
+			info.Status = "idle"
+			info.HasRun = true
+			o.mu.Unlock()
 			treatAsFailed := o.syncMgr.PostAgentSync(agentType, agentErr, opts)
 			if treatAsFailed {
 				o.log("Agent %s: sync recovery failed, treating as failed attempt", agentType)
@@ -1313,6 +1320,12 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 				return
 			}
 		}
+	} else {
+		// No synchronization: transition to idle immediately
+		o.mu.Lock()
+		info.Status = "idle"
+		info.HasRun = true
+		o.mu.Unlock()
 	}
 
 	if agentErr != nil {

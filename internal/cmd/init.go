@@ -115,8 +115,12 @@ func initAgentRepoFromClone(repoDir string, agentType agent.AgentType, remoteURL
 	// Create agent-specific dirs
 	switch agentType {
 	case agent.Solver, agent.Evaluator:
-		os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755)
-		os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755)
+		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
+			return fmt.Errorf("create architecture dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repoDir, "solution-deliverable"), 0755); err != nil {
+			return fmt.Errorf("create solution-deliverable dir: %w", err)
+		}
 	case agent.Architect:
 		specPath := filepath.Join(repoDir, "SPECIFICATION.md")
 		if _, err := os.Stat(specPath); os.IsNotExist(err) {
@@ -126,8 +130,12 @@ func initAgentRepoFromClone(repoDir string, agentType agent.AgentType, remoteURL
 			needsCommit = true
 		}
 	case agent.Reviewer:
-		os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755)
-		os.MkdirAll(filepath.Join(repoDir, "solution"), 0755)
+		if err := os.MkdirAll(filepath.Join(repoDir, "architecture"), 0755); err != nil {
+			return fmt.Errorf("create architecture dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(repoDir, "solution"), 0755); err != nil {
+			return fmt.Errorf("create solution dir: %w", err)
+		}
 	}
 
 	// Commit if anything changed

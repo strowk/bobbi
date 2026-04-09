@@ -195,6 +195,8 @@ func backlogPromote(backlogDir, queuesDir string, filename string) error {
 		reqType = "request_solution_change"
 	case "spec":
 		reqType = "request_architecture_change"
+	case "test":
+		reqType = "request_evaluation_change"
 	case "feature":
 		// Feature: ask user to choose
 		reqType, err = promptFeatureTarget()
@@ -325,7 +327,8 @@ func promptBacklogType() (string, error) {
 	fmt.Println("  1) bug")
 	fmt.Println("  2) spec")
 	fmt.Println("  3) feature")
-	fmt.Print("Choice [1/2/3]: ")
+	fmt.Println("  4) test")
+	fmt.Print("Choice [1/2/3/4]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	choice, err := reader.ReadString('\n')
@@ -341,6 +344,8 @@ func promptBacklogType() (string, error) {
 		return "spec", nil
 	case "3", "feature":
 		return "feature", nil
+	case "4", "test":
+		return "test", nil
 	default:
 		return "", fmt.Errorf("invalid choice: %s", choice)
 	}
@@ -351,7 +356,8 @@ func promptFeatureTarget() (string, error) {
 	fmt.Println("Feature target:")
 	fmt.Println("  1) request_solution_change")
 	fmt.Println("  2) request_architecture_change")
-	fmt.Print("Choice [1/2]: ")
+	fmt.Println("  3) request_evaluation_change")
+	fmt.Print("Choice [1/2/3]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	choice, err := reader.ReadString('\n')
@@ -365,6 +371,8 @@ func promptFeatureTarget() (string, error) {
 		return "request_solution_change", nil
 	case "2":
 		return "request_architecture_change", nil
+	case "3":
+		return "request_evaluation_change", nil
 	default:
 		return "", fmt.Errorf("invalid choice: %s", choice)
 	}

@@ -468,6 +468,11 @@ func (m *Manager) gitCommitAndPush(dir, file, message string) error {
 		return fmt.Errorf("git add: %w", err)
 	}
 	if err := gitCmd(dir, "commit", "-m", message); err != nil {
+		// "nothing to commit" means the file content is identical to what's
+		// already committed — treat this as success rather than an error.
+		if isNothingToCommit(err) {
+			return nil
+		}
 		return fmt.Errorf("git commit: %w", err)
 	}
 	if hasRemote(dir) {
@@ -1174,6 +1179,16 @@ func (m *Manager) getOwnerRepo(repoDir string) (string, string) {
 }
 
 // --- Git helpers ---
+
+// isNothingToCommit checks if a git commit error indicates there was nothing
+// to commit (file content identical to what's already committed).
+func isNothingToCommit(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nothing to commit")
+}
 
 func gitCmd(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)

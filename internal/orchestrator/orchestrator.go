@@ -1299,7 +1299,7 @@ func (o *Orchestrator) processBatch(agentType agent.AgentType, batch workBatch) 
 	// Post-agent synchronization for synchronized agents
 	if isSynced {
 		if isGreenCI {
-			treatAsFailed := o.syncMgr.PostAgentGreenCI(o.shutdownCtx, agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
+			treatAsFailed := o.syncMgr.PostAgentGreenCI(context.Background(), agentType, agentErr, opts, featureBranch, batchAttempts, maxAgentRetries)
 			if treatAsFailed {
 				o.log("Agent %s: Green CI failed, treating as failed attempt", agentType)
 				o.handleAgentFailure(batch, agentType, maxAgentRetries) // exhausted

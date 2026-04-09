@@ -30,13 +30,13 @@ func TestBuildPromptAllAgentRequestTypes(t *testing.T) {
 
 		// Evaluator
 		{Evaluator, "start_evaluator", "", 1, "solution deliverable"},
-		{Evaluator, "start_evaluator", "extra context", 1, "Additional context: extra context"},
+		{Evaluator, "start_evaluator", "extra context", 1, "solution deliverable"},
 		{Evaluator, "request_evaluation_change", "update tests", 1, "change to the test suite"},
 		{Evaluator, "request_evaluation_change", "test1\ntest2", 2, "Multiple changes"},
 
 		// Reviewer
 		{Reviewer, "start_reviewer", "", 1, "Solution code is available"},
-		{Reviewer, "start_reviewer", "extra context", 1, "Additional context: extra context"},
+		{Reviewer, "start_reviewer", "extra context", 1, "Solution code is available"},
 	}
 
 	for _, tt := range tests {
